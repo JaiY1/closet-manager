@@ -22,10 +22,11 @@ RUN python -c "from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2; 
 COPY . .
 
 # All mutable data lives on a mounted volume so redeploys don't wipe it.
+# (No VOLUME instruction here — Railway rejects images that declare one.
+# Attach a Railway Volume with mount path /data in the dashboard instead.)
 ENV DATA_DIR=/data \
     PORT=8080 \
     SECURE_COOKIES=1
-VOLUME ["/data"]
 EXPOSE 8080
 
 CMD ["gunicorn", "-c", "gunicorn.conf.py", "app:app"]

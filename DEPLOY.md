@@ -46,7 +46,7 @@ Health check: point it at `/healthz`.
 ## Railway
 
 1. New project → Deploy from repo (it builds the Dockerfile).
-2. Add a **Volume** mounted at `/data`.
+2. Add a **Volume** mounted at `/data` (Service → Settings → Volumes — this is required for persistence; the Dockerfile deliberately has no `VOLUME` instruction because Railway rejects images that declare one).
 3. Variables tab → add the env vars above.
 4. Railway injects `PORT`; the app already binds to it. Health check path `/healthz`.
 
