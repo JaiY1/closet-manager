@@ -1,0 +1,15 @@
+.env
+closet.db
+chroma_db/
+static/uploads/
+uploads/
+data/
+__pycache__/
+*.pyc
+
+# AI image pipeline caches
+.image_cache/
+.tryon_cache.json
+
+# data export tarballs (scripts/export_data.sh output)
+closet-data-*.tar.gz

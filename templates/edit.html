@@ -1,0 +1,263 @@
+{% extends "base.html" %}
+{% block title %}Closet — Edit Garment{% endblock %}
+
+{% block content %}
+<style>
+  .form-wrap { max-width: 620px; }
+
+  .current-photo {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    background: var(--surface);
+    border: 2px solid var(--line);
+    border-radius: 12px;
+    padding: 12px 14px;
+    margin-bottom: 16px;
+  }
+  .current-photo img {
+    width: 60px;
+    height: 60px;
+    object-fit: cover;
+    border-radius: 8px;
+    border: 1.5px solid var(--line);
+    background: var(--sunken);
+  }
+  .current-photo-placeholder {
+    width: 60px;
+    height: 60px;
+    background: var(--sunken);
+    border: 1.5px solid var(--line);
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.8rem;
+  }
+
+  .upload-zone {
+    border: 2px dashed var(--line);
+    border-radius: 12px;
+    padding: 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+    margin-bottom: 20px;
+    position: relative;
+    background: var(--surface);
+  }
+  .upload-zone:hover { border-color: var(--accent); background: var(--accent-soft); }
+  .upload-zone input[type="file"] {
+    position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%;
+  }
+  .upload-zone span { color: var(--accent); font-weight: 600; }
+
+  .preview-wrap {
+    display: none; position: relative; margin-bottom: 20px;
+  }
+  .preview-wrap img {
+    max-height: 200px; max-width: 100%; border-radius: 12px; border: 2px solid var(--line); object-fit: contain;
+  }
+  .preview-wrap .change-btn { position: absolute; top: 8px; right: 8px; }
+
+  .form-actions { display: flex; gap: 12px; margin-top: 8px; }
+
+  .photo-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+  .photo-thumb {
+    position: relative;
+    width: 80px;
+    height: 80px;
+    border-radius: 10px;
+    overflow: hidden;
+    border: 2px solid var(--line);
+  }
+  .photo-thumb img { width: 100%; height: 100%; object-fit: cover; }
+  .photo-thumb .remove-photo {
+    position: absolute;
+    top: 4px; right: 4px;
+    width: 20px; height: 20px;
+    border-radius: 50%;
+    background: var(--line);
+    color: #fff;
+    border: none;
+    font-size: 0.6rem;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .photo-thumb .remove-photo:hover { background: var(--danger); }
+  .photo-thumb .main-badge {
+    position: absolute;
+    bottom: 4px; left: 4px;
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: 0.55rem;
+    background: var(--accent);
+    color: #fff;
+    padding: 2px 6px;
+    border-radius: 20px;
+    border: 1px solid var(--line);
+  }
+</style>
+
+<div class="form-wrap">
+  <h1>Edit Garment</h1>
+
+  <form method="POST" action="/garments/{{ g.id }}/edit" enctype="multipart/form-data">
+
+    <!-- Photo gallery -->
+    <label style="margin-bottom:8px">Photos</label>
+    <div class="photo-grid" id="photoGrid">
+      {% if g.image_path %}
+      <div class="photo-thumb" id="mainThumb">
+        <img src="/static/{{ g.image_path }}" alt="">
+        <span class="main-badge">main</span>
+      </div>
+      {% endif %}
+      {% for img in extra_images %}
+      <div class="photo-thumb" id="imgThumb{{ img.id }}">
+        <img src="/static/{{ img.image_path }}" alt="">
+        <button type="button" class="remove-photo" onclick="removePhoto({{ g.id }}, {{ img.id }})">✕</button>
+      </div>
+      {% endfor %}
+    </div>
+
+    <!-- Add more photos -->
+    <div id="extraPhotos"></div>
+    <button type="button" class="btn btn-ghost" style="width:100%;margin-bottom:20px;font-size:0.82rem" onclick="addExtraPhoto()">+ Add photo</button>
+
+    <!-- Replace main photo -->
+    <div class="upload-zone" id="uploadZone">
+      <input type="file" name="image" id="imageInput" accept="image/*" onchange="handleImage(this)">
+      <div style="font-size:0.8rem;color:var(--muted)">📷 Replace main photo — <span>browse</span></div>
+    </div>
+    <div class="preview-wrap" id="previewWrap">
+      <img id="previewImg" src="" alt="">
+      <button type="button" class="btn btn-ghost btn-sm change-btn" onclick="resetImage()">Change</button>
+    </div>
+
+    <label>Name *</label>
+    <input type="text" name="name" value="{{ g.name }}" required>
+
+    <div class="row">
+      <div>
+        <label>Type</label>
+        <select name="type">
+          <option value="">Select type</option>
+          {% for t in ['shirt','t-shirt','polo','hoodie','sweater','jacket','coat','blazer',
+                       'trousers','jeans','shorts','chinos','suit','dress','skirt',
+                       'shoes','sneakers','boots','loafers','belt','bag','accessory','other'] %}
+          <option {{ 'selected' if g.type == t else '' }}>{{ t }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Color</label>
+        <input type="text" name="color" value="{{ g.color }}">
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <label>Brand</label>
+        <input type="text" name="brand" value="{{ g.brand }}">
+      </div>
+      <div>
+        <label>Material</label>
+        <input type="text" name="material" value="{{ g.get('material', '') }}">
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <label>Fit</label>
+        <select name="fit">
+          <option value="">Select fit</option>
+          {% for f in ['slim','regular','relaxed','oversized'] %}
+          <option {{ 'selected' if g.fit == f else '' }}>{{ f }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Size</label>
+        <input type="text" name="size" value="{{ g.get('size', '') }}" placeholder="e.g. M, L, 32x32">
+      </div>
+    </div>
+
+    <label>Occasion</label>
+    <select name="occasion">
+      <option value="">Select occasion</option>
+      {% for o in ['casual','smart-casual','formal','athletic'] %}
+      <option {{ 'selected' if g.occasion == o else '' }}>{{ o }}</option>
+      {% endfor %}
+    </select>
+
+    <label>Tags <span style="color:var(--muted);font-size:0.75rem;text-transform:none">(comma separated)</span></label>
+    <input type="text" name="tags" value="{{ g.tags | join(', ') }}">
+
+    <label>Notes</label>
+    <textarea name="notes">{{ g.notes }}</textarea>
+
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">Save Changes</button>
+      <a href="/" class="btn btn-ghost">Cancel</a>
+    </div>
+  </form>
+</div>
+
+<script>
+  function handleImage(input) {
+    if (!input.files[0]) return;
+    const reader = new FileReader();
+    reader.onload = e => {
+      document.getElementById('previewImg').src = e.target.result;
+      document.getElementById('uploadZone').style.display = 'none';
+      document.getElementById('previewWrap').style.display = 'block';
+    };
+    reader.readAsDataURL(input.files[0]);
+  }
+
+  function resetImage() {
+    document.getElementById('imageInput').value = '';
+    document.getElementById('previewWrap').style.display = 'none';
+    document.getElementById('uploadZone').style.display = 'block';
+  }
+
+  let extraCount = 0;
+  function addExtraPhoto() {
+    const container = document.getElementById('extraPhotos');
+    const idx = extraCount++;
+    const wrap = document.createElement('div');
+    wrap.innerHTML = `
+      <div class="upload-zone" id="ez${idx}" style="padding:20px;margin-bottom:8px">
+        <input type="file" name="extra_images" accept="image/*" onchange="previewExtra(this,${idx})">
+        <div style="font-size:0.8rem;color:var(--muted)">📷 New photo — <span>browse</span></div>
+      </div>
+      <div class="preview-wrap" id="ep${idx}" style="margin-bottom:8px">
+        <img id="ei${idx}" src="" alt="">
+        <button type="button" class="btn btn-ghost btn-sm change-btn" onclick="document.getElementById('ep${idx}').style.display='none';document.getElementById('ez${idx}').style.display='block'">Change</button>
+      </div>`;
+    container.appendChild(wrap);
+  }
+
+  function previewExtra(input, idx) {
+    if (!input.files[0]) return;
+    const reader = new FileReader();
+    reader.onload = e => {
+      document.getElementById(`ei${idx}`).src = e.target.result;
+      document.getElementById(`ez${idx}`).style.display = 'none';
+      document.getElementById(`ep${idx}`).style.display = 'block';
+    };
+    reader.readAsDataURL(input.files[0]);
+  }
+
+  async function removePhoto(garmentId, imageId) {
+    const res = await fetch(`/garments/${garmentId}/images/${imageId}`, { method: 'DELETE' });
+    if (res.ok) document.getElementById(`imgThumb${imageId}`).remove();
+  }
+</script>
+{% endblock %}

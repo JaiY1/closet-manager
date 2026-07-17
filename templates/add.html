@@ -1,0 +1,435 @@
+{% extends "base.html" %}
+{% block title %}Closet — Add Garment{% endblock %}
+
+{% block content %}
+<style>
+  .form-wrap { max-width: 620px; }
+
+  .upload-zone {
+    border: 2px dashed var(--line);
+    border-radius: 12px;
+    padding: 32px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+    margin-bottom: 24px;
+    position: relative;
+    background: var(--surface);
+  }
+  .upload-zone:hover, .upload-zone.drag-over {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .upload-zone input[type="file"] {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+    width: 100%;
+    height: 100%;
+  }
+  .upload-icon { font-size: 2.4rem; margin-bottom: 8px; }
+  .upload-label { color: var(--muted); font-size: 0.9rem; }
+  .upload-label span { color: var(--accent); font-weight: 600; }
+
+  .preview-wrap {
+    display: none;
+    position: relative;
+    margin-bottom: 24px;
+  }
+  .preview-wrap img {
+    max-height: 260px;
+    max-width: 100%;
+    border-radius: 12px;
+    border: 2px solid var(--line);
+    object-fit: contain;
+  }
+  .preview-wrap .change-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+  }
+
+  .autotag-status {
+    font-family: var(--font-mono);
+    font-size: 0.76rem;
+    color: var(--accent);
+    margin-bottom: 16px;
+    min-height: 18px;
+  }
+
+  .form-actions {
+    display: flex;
+    gap: 12px;
+    margin-top: 8px;
+  }
+</style>
+
+<div class="form-wrap">
+  <h1>Add Garment</h1>
+
+  <form method="POST" action="/garments" enctype="multipart/form-data" id="garmentForm">
+
+    <!-- Image upload with auto-tag -->
+    <div class="upload-zone" id="uploadZone">
+      <input type="file" name="image" id="imageInput" accept="image/*" onchange="handleImage(this)">
+      <div class="upload-icon">📸</div>
+      <div class="upload-label">Drop a photo or <span>browse</span></div>
+      <div style="font-size:0.75rem;color:var(--muted);margin-top:4px">Claude will auto-fill the form from the image</div>
+    </div>
+
+    <div class="preview-wrap" id="previewWrap">
+      <img id="previewImg" src="" alt="Preview">
+      <button type="button" class="btn btn-ghost btn-sm change-btn" onclick="resetImage()">Change</button>
+    </div>
+
+    <div id="bgRemoveRow" style="display:none;margin-bottom:16px">
+      <button type="button" class="btn btn-ghost btn-sm" id="bgRemoveBtn" onclick="removeBgImage()">✂️ Remove background (free)</button>
+      <span class="autotag-status" id="bgRemoveStatus" style="display:inline-block;margin-left:8px"></span>
+    </div>
+
+    <div class="autotag-status" id="autotagStatus"></div>
+
+    <!-- Extra garment photos -->
+    <div id="extraPhotos"></div>
+    <button type="button" class="btn btn-ghost" style="width:100%;margin-bottom:20px;font-size:0.82rem" onclick="addExtraPhoto()">+ Add another garment photo</button>
+
+    <!-- Tag photos -->
+    <div id="tagZones">
+      <div class="upload-zone tag-zone" style="padding:20px">
+        <input type="file" name="label_image" accept="image/*" onchange="handleLabel(this,0)">
+        <div class="upload-icon" style="font-size:1.8rem">🏷️</div>
+        <div class="upload-label">Add a tag photo <span>optional</span></div>
+        <div style="font-size:0.75rem;color:var(--muted);margin-top:4px">Claude reads the label for brand, size &amp; material</div>
+      </div>
+      <div class="preview-wrap tag-preview-wrap">
+        <img src="" alt="Label preview">
+        <button type="button" class="btn btn-ghost btn-sm change-btn" onclick="resetTag(this)">Change</button>
+      </div>
+      <div class="autotag-status tag-status"></div>
+    </div>
+    <button type="button" class="btn btn-ghost" style="width:100%;margin-bottom:20px;font-size:0.82rem" onclick="addTagZone()">+ Add another tag photo</button>
+
+    <label>Name *</label>
+    <input type="text" name="name" id="fieldName" placeholder="e.g. Navy Oxford Shirt" required>
+
+    <div class="row">
+      <div>
+        <label>Type</label>
+        <select name="type" id="fieldType">
+          <option value="">Select type</option>
+          <option>shirt</option>
+          <option>t-shirt</option>
+          <option>polo</option>
+          <option>hoodie</option>
+          <option>sweater</option>
+          <option>jacket</option>
+          <option>coat</option>
+          <option>blazer</option>
+          <option>trousers</option>
+          <option>jeans</option>
+          <option>shorts</option>
+          <option>chinos</option>
+          <option>suit</option>
+          <option>dress</option>
+          <option>skirt</option>
+          <option>shoes</option>
+          <option>sneakers</option>
+          <option>boots</option>
+          <option>loafers</option>
+          <option>belt</option>
+          <option>bag</option>
+          <option>accessory</option>
+          <option>other</option>
+        </select>
+      </div>
+      <div>
+        <label>Color</label>
+        <input type="text" name="color" id="fieldColor" placeholder="e.g. Navy blue">
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <label>Brand</label>
+        <input type="text" name="brand" id="fieldBrand" placeholder="e.g. Uniqlo">
+      </div>
+      <div>
+        <label>Material</label>
+        <input type="text" name="material" id="fieldMaterial" placeholder="e.g. 100% cotton">
+      </div>
+    </div>
+
+      <div>
+        <label>Fit</label>
+        <select name="fit" id="fieldFit">
+          <option value="">Select fit</option>
+          <option>slim</option>
+          <option>regular</option>
+          <option>relaxed</option>
+          <option>oversized</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <label>Size</label>
+        <input type="text" name="size" id="fieldSize" placeholder="e.g. M, L, 32x32, 10">
+      </div>
+      <div></div>
+    </div>
+
+    <label>Occasion</label>
+    <select name="occasion" id="fieldOccasion">
+      <option value="">Select occasion</option>
+      <option>casual</option>
+      <option>smart-casual</option>
+      <option>formal</option>
+      <option>athletic</option>
+    </select>
+
+    <label>Tags <span style="color:var(--muted);font-size:0.75rem;text-transform:none">(comma separated)</span></label>
+    <input type="text" name="tags" id="fieldTags" placeholder="e.g. summer, linen, breathable">
+
+    <label>Notes</label>
+    <textarea name="notes" id="fieldNotes" placeholder="Any details worth remembering..."></textarea>
+
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary" id="submitBtn">Save to Closet</button>
+      <a href="/" class="btn btn-ghost">Cancel</a>
+    </div>
+  </form>
+</div>
+
+<script>
+  function handleImage(input) {
+    const file = input.files[0];
+    if (!file) return;
+
+    // Show preview
+    const reader = new FileReader();
+    reader.onload = e => {
+      document.getElementById('previewImg').src = e.target.result;
+      document.getElementById('uploadZone').style.display = 'none';
+      document.getElementById('previewWrap').style.display = 'block';
+      document.getElementById('bgRemoveRow').style.display = 'block';
+    };
+    reader.readAsDataURL(file);
+
+    // Auto-tag
+    runAutotag(file);
+  }
+
+  // G: free local background removal for a flat/product garment photo. Replaces
+  // the file that will be submitted with the cutout PNG. No Gemini/API cost.
+  async function removeBgImage() {
+    const input = document.getElementById('imageInput');
+    const file = input.files[0];
+    if (!file) return;
+    const btn = document.getElementById('bgRemoveBtn');
+    const status = document.getElementById('bgRemoveStatus');
+    btn.disabled = true; status.textContent = 'Removing background…';
+    const fd = new FormData(); fd.append('image', file);
+    try {
+      const res = await fetch('/garments/remove-bg', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (data.error) { status.textContent = '⚠️ ' + data.error; btn.disabled = false; return; }
+      const bin = atob(data.image_b64);
+      const arr = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      const f2 = new File([new Blob([arr], { type: 'image/png' })], 'cutout.png', { type: 'image/png' });
+      const dt = new DataTransfer(); dt.items.add(f2);
+      input.files = dt.files;
+      document.getElementById('previewImg').src = 'data:image/png;base64,' + data.image_b64;
+      status.textContent = '✓ Background removed';
+    } catch (e) {
+      status.textContent = '⚠️ Failed — try again.';
+    }
+    btn.disabled = false;
+  }
+
+  async function runAutotag(file) {
+    const status = document.getElementById('autotagStatus');
+    status.textContent = 'Analysing image with Claude Vision...';
+
+    const fd = new FormData();
+    fd.append('image', file);
+
+    try {
+      const res = await fetch('/garments/autotag', { method: 'POST', body: fd });
+      const data = await res.json();
+
+      if (data.error) {
+        status.textContent = 'Auto-tag failed — fill in the form manually.';
+        return;
+      }
+
+      // Pre-fill fields
+      if (data.name)    setField('fieldName', data.name);
+      if (data.type)    setSelect('fieldType', data.type);
+      if (data.color)   setField('fieldColor', data.color);
+      if (data.brand)   setField('fieldBrand', data.brand);
+      if (data.fit)     setSelect('fieldFit', data.fit);
+      if (data.occasion) setSelect('fieldOccasion', data.occasion);
+      if (data.notes)   setField('fieldNotes', data.notes);
+
+      status.textContent = 'Form pre-filled by Claude Vision — review and edit if needed.';
+    } catch (e) {
+      status.textContent = 'Auto-tag failed — fill in the form manually.';
+    }
+  }
+
+  function setField(id, value) {
+    const el = document.getElementById(id);
+    if (el && !el.value) el.value = value;
+  }
+
+  function setSelect(id, value) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    for (const opt of el.options) {
+      if (opt.value.toLowerCase() === value.toLowerCase()) {
+        el.value = opt.value;
+        return;
+      }
+    }
+  }
+
+  // --- Extra garment photos ---
+  let extraPhotoCount = 0;
+  function addExtraPhoto() {
+    const container = document.getElementById('extraPhotos');
+    const idx = extraPhotoCount++;
+    const wrap = document.createElement('div');
+    wrap.innerHTML = `
+      <div class="upload-zone extra-zone" style="padding:20px;margin-bottom:8px" id="extraZone${idx}">
+        <input type="file" name="extra_images" accept="image/*" onchange="handleExtra(this,${idx})">
+        <div class="upload-icon" style="font-size:1.6rem">📷</div>
+        <div class="upload-label">Extra photo <span>browse</span></div>
+      </div>
+      <div class="preview-wrap extra-preview" id="extraPreview${idx}" style="margin-bottom:8px">
+        <img id="extraImg${idx}" src="" alt="">
+        <button type="button" class="btn btn-ghost btn-sm change-btn" onclick="resetExtra(${idx})">Change</button>
+      </div>`;
+    container.appendChild(wrap);
+  }
+
+  function handleExtra(input, idx) {
+    if (!input.files[0]) return;
+    const reader = new FileReader();
+    reader.onload = e => {
+      document.getElementById(`extraImg${idx}`).src = e.target.result;
+      document.getElementById(`extraZone${idx}`).style.display = 'none';
+      document.getElementById(`extraPreview${idx}`).style.display = 'block';
+    };
+    reader.readAsDataURL(input.files[0]);
+  }
+
+  function resetExtra(idx) {
+    document.getElementById(`extraZone${idx}`).style.display = 'block';
+    document.getElementById(`extraPreview${idx}`).style.display = 'none';
+  }
+
+  // --- Tag photos ---
+  let tagCount = 1;
+  function addTagZone() {
+    const container = document.getElementById('tagZones');
+    const idx = tagCount++;
+    const wrap = document.createElement('div');
+    wrap.innerHTML = `
+      <div class="upload-zone tag-zone" style="padding:20px;margin-top:8px" id="tagZone${idx}">
+        <input type="file" name="extra_label_images" accept="image/*" onchange="handleLabel(this,${idx})">
+        <div class="upload-icon" style="font-size:1.8rem">🏷️</div>
+        <div class="upload-label">Another tag photo <span>browse</span></div>
+      </div>
+      <div class="preview-wrap tag-preview-wrap" id="tagPreview${idx}" style="margin-bottom:4px">
+        <img id="tagImg${idx}" src="" alt="">
+        <button type="button" class="btn btn-ghost btn-sm change-btn" onclick="resetTagIdx(${idx})">Change</button>
+      </div>
+      <div class="autotag-status tag-status" id="tagStatus${idx}"></div>`;
+    container.appendChild(wrap);
+  }
+
+  function handleLabel(input, idx) {
+    const file = input.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = e => {
+      const zone = idx === 0
+        ? input.closest('.tag-zone')
+        : document.getElementById(`tagZone${idx}`);
+      const preview = idx === 0
+        ? input.closest('.upload-zone').nextElementSibling
+        : document.getElementById(`tagPreview${idx}`);
+      zone.style.display = 'none';
+      preview.style.display = 'block';
+      preview.querySelector('img').src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+    runLabelAutotag(file, idx);
+  }
+
+  async function runLabelAutotag(file, idx) {
+    const statusEl = idx === 0
+      ? document.querySelector('.tag-status')
+      : document.getElementById(`tagStatus${idx}`);
+    statusEl.textContent = 'Reading label with Claude Vision...';
+    const fd = new FormData();
+    fd.append('image', file);
+    try {
+      const res = await fetch('/garments/autotag/label', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (data.error) { statusEl.textContent = 'Could not read label — fill in manually.'; return; }
+      if (data.brand)    document.getElementById('fieldBrand').value = data.brand;
+      if (data.size)     document.getElementById('fieldSize').value = data.size;
+      if (data.material) document.getElementById('fieldMaterial').value = data.material;
+      const extras = [data.care, data.origin].filter(Boolean).join(' · ');
+      if (extras) {
+        const n = document.getElementById('fieldNotes');
+        n.value = n.value ? n.value + ' | ' + extras : extras;
+      }
+      statusEl.textContent = 'Label read — fields updated.';
+    } catch (e) {
+      statusEl.textContent = 'Could not read label — fill in manually.';
+    }
+  }
+
+  function resetTag(btn) {
+    const zone = btn.closest('.preview-wrap').previousElementSibling;
+    btn.closest('.preview-wrap').style.display = 'none';
+    zone.style.display = 'block';
+  }
+
+  function resetTagIdx(idx) {
+    document.getElementById(`tagZone${idx}`).style.display = 'block';
+    document.getElementById(`tagPreview${idx}`).style.display = 'none';
+  }
+
+  function resetImage() {
+    document.getElementById('imageInput').value = '';
+    document.getElementById('previewWrap').style.display = 'none';
+    document.getElementById('uploadZone').style.display = 'block';
+    document.getElementById('autotagStatus').textContent = '';
+    document.getElementById('bgRemoveRow').style.display = 'none';
+    document.getElementById('bgRemoveStatus').textContent = '';
+  }
+
+  // Drag-over styling
+  const zone = document.getElementById('uploadZone');
+  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+  zone.addEventListener('drop', e => {
+    e.preventDefault();
+    zone.classList.remove('drag-over');
+    const file = e.dataTransfer.files[0];
+    if (file && file.type.startsWith('image/')) {
+      const input = document.getElementById('imageInput');
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      input.files = dt.files;
+      handleImage(input);
+    }
+  });
+</script>
+{% endblock %}

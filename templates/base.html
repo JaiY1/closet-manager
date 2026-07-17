@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>{% block title %}Closet{% endblock %}</title>
+  <link rel="manifest" href="/static/manifest.json">
+  <meta name="theme-color" content="#e8590c">
+  <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="POP">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* ===== POP design system =====
+       High-contrast, bold. Off-white paper, near-black ink, tangerine accent.
+       Cards and controls use a 2px black outline; primary surfaces cast a hard
+       offset shadow. Class API is unchanged from the original dark theme, so
+       every existing page template restyles automatically. */
+    :root {
+      --bg:          #faf7f0;   /* page paper */
+      --surface:     #ffffff;   /* cards / raised surfaces */
+      --sunken:      #f3efe6;   /* wells, chips, placeholders */
+      --line:        #1a1a1a;   /* structural (bold) borders */
+      --hair:        #e6ded0;   /* subtle dividers */
+      --input:       #ffffff;
+      --text:        #1a1a1a;
+      --muted:       #7a7365;
+      --accent:      #e8590c;   /* tangerine */
+      --accent-soft: #fff2e8;
+      --accent-hover:#cf4d08;
+      --success:     #1e8a5b;
+      --danger:      #c0392b;
+      --shadow:      6px 6px 0 var(--line);
+      --font-display:'Space Grotesk', sans-serif;
+      --font-body:   'DM Sans', sans-serif;
+      --font-mono:   'IBM Plex Mono', monospace;
+    }
+
+    body {
+      font-family: var(--font-body);
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    /* Nav */
+    nav {
+      background: var(--surface);
+      border-bottom: 2px solid var(--line);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 26px;
+      height: 60px;
+    }
+
+    .nav-brand {
+      font-family: var(--font-display);
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: -0.5px;
+      text-decoration: none;
+      margin-right: 26px;
+    }
+    .nav-brand::after { content: "."; color: var(--accent); }
+
+    nav a {
+      font-family: var(--font-display);
+      color: var(--text);
+      text-decoration: none;
+      font-size: 0.85rem;
+      font-weight: 600;
+      padding: 7px 15px;
+      border-radius: 40px;
+      display: flex;
+      align-items: center;
+      border: 2px solid transparent;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
+    }
+    nav a:hover { border-color: var(--line); }
+    nav a.active {
+      background: var(--line);
+      color: #fff;
+      border-color: var(--line);
+    }
+
+    .nav-user {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .nav-user span {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+
+    .nav-user .btn {
+      padding: 6px 14px;
+    }
+
+    /* Page layout */
+    main {
+      max-width: 1140px;
+      margin: 0 auto;
+      padding: 34px 24px 80px;
+    }
+
+    h1 {
+      font-family: var(--font-display);
+      font-size: 1.7rem;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      margin-bottom: 24px;
+      color: var(--text);
+    }
+
+    h2 {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      font-weight: 500;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      margin-bottom: 16px;
+    }
+
+    /* Card */
+    .card {
+      background: var(--surface);
+      border: 2px solid var(--line);
+      border-radius: 14px;
+      padding: 22px;
+      margin-bottom: 20px;
+    }
+    .card--pop { box-shadow: var(--shadow); }
+
+    /* Accent banner — the bold orange header block used across pages */
+    .banner {
+      background: var(--accent);
+      border: 2px solid var(--line);
+      border-radius: 14px;
+      padding: 22px 24px;
+      margin-bottom: 22px;
+    }
+    .banner h1 { color: var(--text); margin: 0; }
+
+    /* Form elements */
+    label {
+      display: block;
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      margin-bottom: 6px;
+    }
+
+    input[type="text"], input[type="date"], input[type="number"], select, textarea {
+      width: 100%;
+      padding: 10px 13px;
+      background: var(--input);
+      border: 2px solid var(--line);
+      border-radius: 10px;
+      color: var(--text);
+      font-size: 0.9rem;
+      margin-bottom: 16px;
+      outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+      font-family: inherit;
+    }
+
+    input:focus, select:focus, textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+
+    textarea { resize: vertical; min-height: 80px; }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .row-3 {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 12px;
+    }
+
+    /* Buttons */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--font-display);
+      padding: 10px 18px;
+      border-radius: 10px;
+      font-size: 0.875rem;
+      font-weight: 700;
+      cursor: pointer;
+      border: 2px solid var(--line);
+      transition: background 0.15s, color 0.15s, transform 0.05s;
+      text-decoration: none;
+    }
+    .btn:active { transform: translate(1px, 1px); }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+    }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-primary:disabled { background: #cfc7b6; border-color: #cfc7b6; cursor: not-allowed; }
+
+    .btn-ghost {
+      background: transparent;
+      color: var(--text);
+    }
+    .btn-ghost:hover { background: var(--line); color: #fff; }
+
+    .btn-danger {
+      background: transparent;
+      color: var(--danger);
+      border-color: var(--danger);
+    }
+    .btn-danger:hover { background: var(--danger); color: #fff; }
+
+    /* Pill / segmented style — used by filter buttons and nav-like toggles */
+    .btn-pill { border-radius: 40px; }
+    .btn-sm { padding: 6px 13px; font-size: 0.78rem; }
+
+    /* Status / error */
+    .status  { font-family: var(--font-mono); font-size: 0.78rem; color: var(--muted); margin-top: 8px; min-height: 18px; }
+    .error   { font-size: 0.85rem; color: var(--danger); margin-top: 8px; }
+    .success { font-size: 0.85rem; color: var(--success); margin-top: 8px; }
+
+    /* Answer box */
+    .answer-box {
+      background: var(--bg);
+      border: 2px solid var(--line);
+      border-left-width: 6px;
+      border-left-color: var(--accent);
+      border-radius: 10px;
+      padding: 16px 20px;
+      margin-top: 16px;
+      font-size: 0.92rem;
+      line-height: 1.7;
+      white-space: pre-wrap;
+    }
+
+    /* Chips / tags */
+    .tag {
+      font-size: 0.7rem;
+      font-weight: 500;
+      padding: 3px 10px;
+      border-radius: 20px;
+      background: var(--sunken);
+      color: var(--text);
+      border: 1.5px solid var(--line);
+    }
+
+    /* Stars */
+    .stars { display: flex; gap: 4px; }
+    .star  { font-size: 1.25rem; cursor: pointer; color: var(--hair); transition: color 0.1s; }
+    .star.on { color: var(--accent); }
+  </style>
+</head>
+<body>
+
+<nav>
+  <a class="nav-brand" href="/">POP</a>
+  <a href="/" {% if request.path == '/' %}class="active"{% endif %}>Catalog</a>
+  <a href="/outfits" {% if request.path.startswith('/outfits') %}class="active"{% endif %}>Outfits</a>
+  <a href="/calendar" {% if request.path.startswith('/calendar') %}class="active"{% endif %}>Calendar</a>
+  <a href="/ask" {% if request.path.startswith('/ask') %}class="active"{% endif %}>Ask / Suggest</a>
+  <a href="/shop" {% if request.path.startswith('/shop') %}class="active"{% endif %}>Shop</a>
+  <div class="nav-user">
+    <span>{{ current_user.name }}</span>
+    {% if feedback_email %}<a href="mailto:{{ feedback_email }}?subject=POP%20Closet%20feedback" class="btn btn-ghost btn-sm btn-pill">Feedback</a>{% endif %}
+    <a href="/logout" class="btn btn-ghost btn-sm btn-pill">Log out</a>
+  </div>
+</nav>
+
+<main>
+  {% block content %}{% endblock %}
+</main>
+
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+  }
+</script>
+
+</body>
+</html>

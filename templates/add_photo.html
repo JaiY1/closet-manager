@@ -1,0 +1,337 @@
+{% extends "base.html" %}
+{% block title %}Closet — Import from Photo{% endblock %}
+
+{% block content %}
+<style>
+  .wrap { max-width: 920px; }
+
+  .lead { color: var(--muted); font-size: 0.9rem; margin-bottom: 22px; line-height: 1.55; }
+
+  .upload-zone {
+    border: 2px dashed var(--line);
+    border-radius: 12px;
+    padding: 40px 32px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+    margin-bottom: 24px;
+    position: relative;
+    background: var(--surface);
+  }
+  .upload-zone:hover, .upload-zone.drag-over { border-color: var(--accent); background: var(--accent-soft); }
+  .upload-zone input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+  .upload-icon { font-size: 2.6rem; margin-bottom: 8px; }
+  .upload-label { color: var(--muted); font-size: 0.92rem; }
+  .upload-label span { color: var(--accent); font-weight: 600; }
+
+  .source-preview { display: none; margin-bottom: 22px; text-align: center; }
+  .source-preview img {
+    max-height: 300px; max-width: 100%;
+    border: 2px solid var(--line); border-radius: 12px; object-fit: contain;
+  }
+
+  .status {
+    font-family: var(--font-mono);
+    font-size: 0.8rem; color: var(--accent);
+    margin-bottom: 20px; min-height: 20px;
+  }
+
+  .review-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+
+  .review-card {
+    background: var(--surface);
+    border: 2px solid var(--line);
+    border-radius: 12px;
+    overflow: hidden;
+    transition: opacity 0.15s;
+  }
+  .review-card.excluded { opacity: 0.4; }
+
+  .cutout {
+    width: 100%;
+    aspect-ratio: 1/1;
+    background:
+      repeating-conic-gradient(#efe9dc 0% 25%, #f7f3ea 0% 50%) 50% / 22px 22px;
+    border-bottom: 2px solid var(--line);
+    display: flex; align-items: center; justify-content: center;
+    position: relative;
+  }
+  .cutout img { width: 100%; height: 100%; object-fit: contain; }
+  .cutout .failed { color: var(--danger); font-size: 0.78rem; padding: 12px; text-align: center; }
+
+  .card-body { padding: 12px; }
+  .card-body input, .card-body select { margin-bottom: 8px; font-size: 0.82rem; padding: 7px 10px; }
+
+  .include-row {
+    display: flex; align-items: center; gap: 8px;
+    font-family: var(--font-mono); font-size: 0.72rem;
+    text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted);
+    margin-bottom: 10px; cursor: pointer;
+  }
+  .include-row input { width: auto; margin: 0; }
+
+  .gen-btn {
+    width: 100%; margin-top: 4px;
+    font-family: var(--font-display); font-weight: 600; font-size: 0.76rem;
+    padding: 7px 10px; border-radius: 8px; cursor: pointer;
+    border: 2px solid var(--line); background: transparent; color: var(--text);
+    transition: background 0.15s, color 0.15s;
+  }
+  .gen-btn:hover { background: var(--line); color: #fff; }
+  .gen-btn:disabled { opacity: 0.5; cursor: default; }
+  .gen-status { font-family: var(--font-mono); font-size: 0.68rem; color: var(--accent); min-height: 14px; margin-top: 4px; }
+
+  .actions { display: flex; gap: 12px; align-items: center; }
+
+  .empty-note { color: var(--muted); font-size: 0.9rem; padding: 20px 0; }
+</style>
+
+<div class="wrap">
+  <h1>Import from Photo</h1>
+  <p class="lead">Drop an outfit photo (a selfie or full-body shot). Claude finds each garment, and Gemini reconstructs a clean catalog cutout of every piece. Review, tweak, and add the ones you want.</p>
+  <div id="usageLine" style="font-family:var(--font-mono);font-size:0.68rem;color:var(--muted);margin-bottom:18px"></div>
+
+  <div class="upload-zone" id="uploadZone">
+    <input type="file" id="photoInput" accept="image/*" onchange="handlePhoto(this)">
+    <div class="upload-icon">🧍</div>
+    <div class="upload-label">Drop, paste, or <span>browse</span> an outfit photo</div>
+    <div style="font-size:0.75rem;color:var(--muted);margin-top:6px">Best results: a clear, well-lit photo showing the whole outfit · ⌘/Ctrl+V to paste</div>
+  </div>
+
+  <div class="source-preview" id="sourcePreview">
+    <img id="sourceImg" src="" alt="Source photo">
+    <div style="margin-top:10px"><button type="button" class="btn btn-ghost btn-sm" onclick="reset()">Use a different photo</button></div>
+  </div>
+
+  <div class="status" id="status"></div>
+
+  <div class="review-grid" id="reviewGrid"></div>
+
+  <div class="actions" id="actions" style="display:none">
+    <button type="button" class="btn btn-primary" id="addBtn" onclick="confirmAdd()">Add selected to closet</button>
+    <a href="/" class="btn btn-ghost">Cancel</a>
+  </div>
+</div>
+
+<script>
+  const TYPES = ["shirt","t-shirt","polo","hoodie","sweater","jacket","coat","trousers","jeans","shorts","chinos","suit","blazer","dress","skirt","shoes","sneakers","boots","loafers","belt","bag","accessory","other"];
+  let detected = [];
+
+  async function loadUsage() {
+    try {
+      const d = await (await fetch('/usage')).json();
+      const capTxt = d.daily_cap ? ` / ${d.daily_cap}` : '';
+      document.getElementById('usageLine').innerHTML =
+        `🎨 AI images today: ${d.today}${capTxt} · this month: ${d.month}`;
+    } catch {}
+  }
+  loadUsage();
+
+  // Preview / regenerate a single cutout in the review grid.
+  async function genCutout(i, regenerate) {
+    const g = detected[i];
+    if (!g || !g.crop_b64) return;
+    const btn = document.getElementById('genbtn' + i);
+    const st = document.getElementById('gen' + i);
+    btn.disabled = true;
+    st.textContent = regenerate ? 'Regenerating…' : 'Generating cutout…';
+    try {
+      const res = await fetch('/add/photo/cutout', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          crop_b64: g.crop_b64, name: g.name, color: g.color,
+          notes: g.notes, regenerate: !!regenerate
+        })
+      });
+      const data = await res.json();
+      if (data.error) { st.textContent = '⚠️ ' + data.error; btn.disabled = false; return; }
+      g.cutout_b64 = data.cutout_b64;
+      const img = document.getElementById('cut' + i);
+      if (img) img.src = 'data:image/png;base64,' + g.cutout_b64;
+      btn.textContent = '🔄 Regenerate';
+      btn.setAttribute('onclick', `genCutout(${i}, true)`);
+      btn.disabled = false;
+      st.textContent = '✓ cutout ready';
+      loadUsage();
+    } catch (e) {
+      st.textContent = '⚠️ Failed — try again.';
+      btn.disabled = false;
+    }
+  }
+
+  // Paste an image (Cmd/Ctrl+V) to import it, same as dropping a file.
+  document.addEventListener('paste', (e) => {
+    const items = (e.clipboardData && e.clipboardData.items) || [];
+    for (const it of items) {
+      if (it.type && it.type.startsWith('image/')) {
+        const file = it.getAsFile();
+        if (file) {
+          const dt = new DataTransfer(); dt.items.add(file);
+          const input = document.getElementById('photoInput');
+          input.files = dt.files;
+          handlePhoto(input);
+        }
+        break;
+      }
+    }
+  });
+
+  function handlePhoto(input) {
+    const file = input.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = e => {
+      document.getElementById('sourceImg').src = e.target.result;
+      document.getElementById('uploadZone').style.display = 'none';
+      document.getElementById('sourcePreview').style.display = 'block';
+    };
+    reader.readAsDataURL(file);
+    analyze(file);
+  }
+
+  async function analyze(file) {
+    const status = document.getElementById('status');
+    status.textContent = 'Detecting garments and reconstructing cutouts — this can take a minute…';
+    document.getElementById('reviewGrid').innerHTML = '';
+    document.getElementById('actions').style.display = 'none';
+
+    const fd = new FormData();
+    fd.append('image', file);
+    try {
+      const res = await fetch('/add/photo/analyze', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (data.error) { status.textContent = '⚠️ ' + data.error; return; }
+      detected = data.garments || [];
+      const optin = !!data.optin;
+      renderReview();
+      const ok = detected.filter(g => !g.error).length;
+      status.textContent = ok
+        ? `Found ${detected.length} item${detected.length===1?'':'s'}. Review, uncheck any you don't want${optin ? ' — clean cutouts are generated only for the ones you add' : ''}.`
+        : 'No garments detected. Try a clearer photo.';
+    } catch (e) {
+      status.textContent = '⚠️ Something went wrong. Try again.';
+    }
+  }
+
+  function renderReview() {
+    const grid = document.getElementById('reviewGrid');
+    grid.innerHTML = '';
+    detected.forEach((g, i) => {
+      // Opt-in mode shows the raw crop (jpeg); eager mode shows the cutout (png).
+      const preview = g.cutout_b64
+        ? `data:image/png;base64,${g.cutout_b64}`
+        : (g.crop_b64 ? `data:image/jpeg;base64,${g.crop_b64}` : null);
+      const failed = !!g.error || !preview;
+      const typeOpts = TYPES.map(t => `<option ${t===g.type?'selected':''}>${t}</option>`).join('');
+      const card = document.createElement('div');
+      card.className = 'review-card' + (failed ? ' excluded' : '');
+      card.id = `card${i}`;
+      const hasCut = !!g.cutout_b64;
+      card.innerHTML = `
+        <div class="cutout">
+          ${failed
+            ? `<div class="failed">Couldn't process this item${g.error ? '<br><small>'+esc(g.error)+'</small>' : ''}</div>`
+            : `<img id="cut${i}" src="${preview}" alt="">`}
+        </div>
+        <div class="card-body">
+          <label class="include-row">
+            <input type="checkbox" ${failed?'':'checked'} ${failed?'disabled':''} onchange="toggle(${i}, this.checked)">
+            Include
+          </label>
+          <input type="text" value="${esc(g.name||'')}" placeholder="Name" oninput="detected[${i}].name=this.value" ${failed?'disabled':''}>
+          <select oninput="detected[${i}].type=this.value" onchange="detected[${i}].type=this.value" ${failed?'disabled':''}>
+            <option value="">Type</option>${typeOpts}
+          </select>
+          <input type="text" value="${esc(g.color||'')}" placeholder="Color" oninput="detected[${i}].color=this.value" ${failed?'disabled':''}>
+          <input type="text" value="${esc(g.brand||'')}" placeholder="Brand" oninput="detected[${i}].brand=this.value" ${failed?'disabled':''}>
+          ${failed ? '' : `
+          <button type="button" class="gen-btn" id="genbtn${i}" onclick="genCutout(${i}, ${hasCut})">
+            ${hasCut ? '🔄 Regenerate' : '✨ Preview cutout'}
+          </button>
+          <div class="gen-status" id="gen${i}"></div>`}
+        </div>`;
+      grid.appendChild(card);
+      g.include = !failed;
+    });
+    document.getElementById('actions').style.display = detected.some(g => g.include) ? 'flex' : 'none';
+    updateAddBtn();
+  }
+
+  function toggle(i, checked) {
+    detected[i].include = checked;
+    document.getElementById(`card${i}`).classList.toggle('excluded', !checked);
+    updateAddBtn();
+  }
+
+  function updateAddBtn() {
+    const n = detected.filter(g => g.include).length;
+    const btn = document.getElementById('addBtn');
+    btn.textContent = n ? `Add ${n} to closet` : 'Add selected to closet';
+    btn.disabled = !n;
+  }
+
+  async function confirmAdd() {
+    const items = detected.filter(g => g.include).map(g => ({
+      name: g.name, type: g.type, color: g.color, brand: g.brand,
+      fit: g.fit, occasion: g.occasion, notes: g.notes,
+      cutout_b64: g.cutout_b64, crop_b64: g.crop_b64
+    }));
+    if (!items.length) return;
+    const btn = document.getElementById('addBtn');
+    btn.disabled = true;
+    // Opt-in mode reconstructs cutouts now, so this step can take a bit.
+    btn.textContent = items.some(it => !it.cutout_b64) ? 'Generating cutouts…' : 'Adding…';
+    try {
+      const res = await fetch('/add/photo/confirm', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ items })
+      });
+      const data = await res.json();
+      if (data.ok && data.cap) {
+        // Hit a cost cap mid-batch: some items saved, some skipped.
+        document.getElementById('status').textContent = `Added ${data.saved}. ⚠️ ${data.cap}`;
+        btn.textContent = 'Go to catalog'; btn.disabled = false;
+        btn.onclick = () => window.location.href = '/';
+      } else if (data.ok) {
+        window.location.href = '/';
+      } else {
+        btn.disabled = false; updateAddBtn();
+        document.getElementById('status').textContent = '⚠️ ' + (data.error || 'Could not save.');
+      }
+    } catch (e) {
+      btn.disabled = false; updateAddBtn();
+      document.getElementById('status').textContent = '⚠️ Could not save. Try again.';
+    }
+  }
+
+  function reset() {
+    document.getElementById('photoInput').value = '';
+    document.getElementById('sourcePreview').style.display = 'none';
+    document.getElementById('uploadZone').style.display = 'block';
+    document.getElementById('status').textContent = '';
+    document.getElementById('reviewGrid').innerHTML = '';
+    document.getElementById('actions').style.display = 'none';
+    detected = [];
+  }
+
+  function esc(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  const zone = document.getElementById('uploadZone');
+  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+  zone.addEventListener('drop', e => {
+    e.preventDefault(); zone.classList.remove('drag-over');
+    const file = e.dataTransfer.files[0];
+    if (file && file.type.startsWith('image/')) {
+      const dt = new DataTransfer(); dt.items.add(file);
+      document.getElementById('photoInput').files = dt.files;
+      handlePhoto(document.getElementById('photoInput'));
+    }
+  });
+</script>
+{% endblock %}

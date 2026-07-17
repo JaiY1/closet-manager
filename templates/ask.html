@@ -1,0 +1,528 @@
+{% extends "base.html" %}
+{% block title %}Closet — Ask / Suggest{% endblock %}
+
+{% block content %}
+<style>
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    align-items: start;
+  }
+  @media (max-width: 700px) { .two-col { grid-template-columns: 1fr; } }
+
+  /* Suggest */
+  .suggest-result {
+    margin-top: 16px;
+    display: none;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .outfit-item {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    background: var(--bg);
+    border: 2px solid var(--line);
+    border-radius: 10px;
+    padding: 10px;
+  }
+
+  .outfit-item-img {
+    width: 72px;
+    height: 72px;
+    border-radius: 8px;
+    object-fit: cover;
+    background:
+      repeating-linear-gradient(45deg, #f3efe6, #f3efe6 6px, #ece7da 6px, #ece7da 12px);
+    border: 1.5px solid var(--line);
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.6rem;
+    overflow: hidden;
+  }
+  .outfit-item-img img { width: 100%; height: 100%; object-fit: cover; }
+
+  .outfit-item-info { flex: 1; min-width: 0; }
+  .outfit-item-name { font-family: var(--font-display); font-weight: 700; font-size: 0.9rem; margin-bottom: 4px; }
+  .outfit-item-meta { font-size: 0.75rem; color: var(--muted); margin-bottom: 6px; }
+  .outfit-item-reason { font-size: 0.82rem; color: var(--text); line-height: 1.5; }
+
+  /* Try-on */
+  .tryon-wrap { display: none; margin-top: 14px; }
+
+  .tryon-photo-setting { margin-top: 16px; padding-top: 14px; border-top: 1.5px solid var(--hair); }
+  .tps-label {
+    font-family: var(--font-mono); font-size: 0.68rem; text-transform: uppercase;
+    letter-spacing: 1px; color: var(--muted); margin-bottom: 8px;
+  }
+  .body-photo-row { margin-bottom: 0; }
+  .body-upload-zone {
+    border: 2px dashed var(--line);
+    border-radius: 10px;
+    padding: 14px;
+    text-align: center;
+    cursor: pointer;
+    background: var(--surface);
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .body-upload-zone:hover { border-color: var(--accent); background: var(--accent-soft); }
+  .body-upload-zone .t { font-family: var(--font-display); font-weight: 700; font-size: 0.85rem; }
+  .body-upload-zone .s { font-size: 0.72rem; color: var(--muted); margin-top: 3px; }
+  .body-thumb-row { display: flex; align-items: center; gap: 10px; font-size: 0.78rem; color: var(--muted); }
+  .body-thumb-row img {
+    width: 40px; height: 52px; object-fit: cover;
+    border: 2px solid var(--line); border-radius: 6px;
+  }
+  .body-warning {
+    margin-top: 8px; font-size: 0.75rem; line-height: 1.45;
+    color: var(--accent-hover);
+    background: var(--accent-soft); border: 1.5px solid var(--accent);
+    border-radius: 8px; padding: 7px 10px;
+  }
+
+  .tryon-result { margin-top: 12px; }
+  .tryon-result img {
+    width: 100%;
+    border: 2px solid var(--line);
+    border-radius: 12px;
+    display: block;
+  }
+  .tryon-hint { font-size: 0.76rem; color: var(--muted); margin-top: 8px; line-height: 1.5; }
+
+  .usage-meter {
+    font-family: var(--font-mono); font-size: 0.68rem; color: var(--muted);
+    margin-top: 12px; padding-top: 10px; border-top: 1.5px solid var(--hair);
+  }
+  .usage-meter b { color: var(--text); }
+
+  .gallery-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(78px, 1fr)); gap: 8px;
+  }
+  .gallery-grid a {
+    display: block; border: 2px solid var(--line); border-radius: 8px;
+    overflow: hidden; aspect-ratio: 3/4;
+  }
+  .gallery-grid img { width: 100%; height: 100%; object-fit: cover; }
+
+  /* Chat */
+  .chat-history {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 16px;
+    max-height: 420px;
+    overflow-y: auto;
+  }
+
+  .msg {
+    max-width: 88%;
+    padding: 10px 14px;
+    border-radius: 14px;
+    font-size: 0.9rem;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    border: 2px solid var(--line);
+  }
+
+  .msg-user {
+    background: var(--accent);
+    color: #fff;
+    align-self: flex-end;
+    border-bottom-right-radius: 4px;
+  }
+
+  .msg-ai {
+    background: var(--bg);
+    align-self: flex-start;
+    border-bottom-left-radius: 4px;
+    color: var(--text);
+  }
+
+  .chat-input-row {
+    display: flex;
+    gap: 8px;
+  }
+
+  .chat-input-row input {
+    flex: 1;
+    margin-bottom: 0;
+  }
+
+  .chat-input-row button {
+    flex-shrink: 0;
+    width: auto;
+    padding: 10px 18px;
+  }
+
+  /* Style profile panel */
+  .profile-box {
+    background: var(--line);
+    color: #ece7da;
+    border-radius: 10px;
+    padding: 16px 18px;
+    font-size: 0.9rem;
+    line-height: 1.7;
+    min-height: 80px;
+    white-space: pre-wrap;
+  }
+
+  .profile-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+  }
+</style>
+
+<h1>Ask &amp; Suggest</h1>
+
+<div class="two-col">
+
+  <!-- Left: Outfit Suggester -->
+  <div>
+    <div class="card card--pop">
+      <h2>Outfit Suggestion</h2>
+
+      <label>Occasion</label>
+      <input type="text" id="suggestOccasion" placeholder="e.g. smart casual dinner, weekend walk">
+
+      <label>Weather / Conditions <span style="font-size:0.75rem;color:var(--muted);text-transform:none">(optional)</span></label>
+      <input type="text" id="suggestWeather" placeholder="e.g. cold, rainy, warm summer day">
+
+      <button class="btn btn-primary" style="width:100%" id="suggestBtn" onclick="getSuggestion()">
+        Suggest an Outfit
+      </button>
+      <div class="status" id="suggestStatus"></div>
+      <div class="suggest-result" id="suggestResult"></div>
+
+      <!-- Persistent try-on photo — stored per user in the DB, always visible -->
+      <div class="tryon-photo-setting">
+        <div class="tps-label">Your try-on photo</div>
+        <div class="body-photo-row" id="bodyPhotoRow"></div>
+      </div>
+      <input type="file" id="bodyInput" accept="image/*" style="display:none" onchange="uploadBody(this)">
+
+      <div class="tryon-wrap" id="tryonWrap">
+        <button class="btn btn-ghost" style="width:100%" id="tryonBtn" onclick="doTryon()">👤 See it on you</button>
+        <div class="status" id="tryonStatus"></div>
+        <div class="tryon-result" id="tryonResult"></div>
+        <div class="tryon-hint" id="tryonHint"></div>
+      </div>
+
+      <div class="usage-meter" id="usageMeter"></div>
+    </div>
+
+    <!-- Recent try-ons gallery -->
+    <div class="card" id="galleryCard" style="display:none">
+      <h2>Recent Try-Ons</h2>
+      <div class="gallery-grid" id="tryonGallery"></div>
+    </div>
+
+    <!-- Style Profile -->
+    <div class="card">
+      <div class="profile-actions">
+        <h2 style="margin-bottom:0">Your Style Profile</h2>
+        <button class="btn btn-ghost btn-sm" id="refreshBtn" onclick="refreshProfile()">Refresh</button>
+      </div>
+      <div class="profile-box" id="profileBox">
+        Loading...
+      </div>
+      <div class="status" id="profileStatus"></div>
+    </div>
+  </div>
+
+  <!-- Right: Ask chat -->
+  <div>
+    <div class="card card--pop" style="height:100%">
+      <h2>Ask About Your Wardrobe</h2>
+      <p style="font-size:0.82rem;color:var(--muted);margin-bottom:16px">
+        Try: "What blue shirts do I own?", "What haven't I worn recently?", "What goes with my grey chinos?"
+      </p>
+
+      <div class="chat-history" id="chatHistory"></div>
+
+      <div class="chat-input-row">
+        <input type="text" id="chatInput" placeholder="Ask anything about your wardrobe..." onkeydown="if(event.key==='Enter')sendMessage()">
+        <button class="btn btn-primary" id="sendBtn" onclick="sendMessage()">Send</button>
+      </div>
+      <div class="status" id="chatStatus"></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  // Load style profile on page load
+  window.addEventListener('DOMContentLoaded', loadProfile);
+
+  async function loadProfile() {
+    const box = document.getElementById('profileBox');
+    try {
+      const res = await fetch('/style');
+      const data = await res.json();
+      box.textContent = data.summary || 'No style profile yet. Save and rate some outfits, then click Refresh.';
+    } catch {
+      box.textContent = 'Could not load profile.';
+    }
+  }
+
+  async function refreshProfile() {
+    const btn = document.getElementById('refreshBtn');
+    const status = document.getElementById('profileStatus');
+    const box = document.getElementById('profileBox');
+    btn.disabled = true;
+    status.textContent = 'Generating your style profile with Claude...';
+    try {
+      const res = await fetch('/style/refresh', { method: 'POST' });
+      const data = await res.json();
+      box.textContent = data.summary;
+      status.textContent = 'Profile updated.';
+    } catch {
+      status.textContent = 'Failed to refresh.';
+    }
+    btn.disabled = false;
+  }
+
+  async function getSuggestion() {
+    const btn = document.getElementById('suggestBtn');
+    const status = document.getElementById('suggestStatus');
+    const result = document.getElementById('suggestResult');
+    const occasion = document.getElementById('suggestOccasion').value.trim();
+    const weather = document.getElementById('suggestWeather').value.trim();
+
+    btn.disabled = true;
+    status.textContent = 'Finding the right outfit...';
+    result.style.display = 'none';
+
+    try {
+      const params = new URLSearchParams();
+      if (occasion) params.set('occasion', occasion);
+      if (weather)  params.set('weather', weather);
+
+      const res = await fetch('/suggest?' + params.toString());
+      const data = await res.json();
+
+      if (data.error) { status.textContent = data.error; return; }
+
+      result.innerHTML = '';
+      currentGarmentIds = [];
+      (data.items || []).forEach(item => {
+        const g = item.garment;
+        if (g.id != null) currentGarmentIds.push(g.id);
+        const imgHtml = g.image_path
+          ? `<div class="outfit-item-img"><img src="/static/${esc(g.image_path)}" alt=""></div>`
+          : `<div class="outfit-item-img">👕</div>`;
+        const meta = [g.color, g.brand, g.fit ? g.fit + ' fit' : ''].filter(Boolean).join(' · ');
+        result.innerHTML += `
+          <div class="outfit-item">
+            ${imgHtml}
+            <div class="outfit-item-info">
+              <div class="outfit-item-name">${esc(g.name)}</div>
+              <div class="outfit-item-meta">${esc(meta)}</div>
+              <div class="outfit-item-reason">${esc(item.reason)}</div>
+            </div>
+          </div>`;
+      });
+      result.style.display = 'flex';
+      status.textContent = '';
+
+      // Reset and show the try-on control for this fresh suggestion.
+      document.getElementById('tryonResult').innerHTML = '';
+      document.getElementById('tryonStatus').textContent = '';
+      document.getElementById('tryonHint').textContent = '';
+      document.getElementById('tryonWrap').style.display = currentGarmentIds.length ? 'block' : 'none';
+    } catch {
+      status.textContent = 'Failed to get suggestion.';
+    }
+    btn.disabled = false;
+  }
+
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  // --- Virtual try-on ---
+  let currentGarmentIds = [];
+  let hasBodyPhoto = false;
+  let bodyPhotoUrl = null;
+  let bodyWarning = '';
+
+  window.addEventListener('DOMContentLoaded', () => { loadBodyState(); loadUsage(); loadGallery(); });
+
+  async function loadUsage() {
+    try {
+      const d = await (await fetch('/usage')).json();
+      const el = document.getElementById('usageMeter');
+      const capTxt = d.daily_cap ? ` / ${d.daily_cap}` : '';
+      el.innerHTML = `🎨 AI images today: <b>${d.today}${capTxt}</b> &nbsp;·&nbsp; this month: <b>${d.month}</b>`;
+    } catch {}
+  }
+
+  async function loadGallery() {
+    try {
+      const d = await (await fetch('/tryon/history')).json();
+      const items = d.items || [];
+      const card = document.getElementById('galleryCard');
+      const grid = document.getElementById('tryonGallery');
+      if (!items.length) { card.style.display = 'none'; return; }
+      grid.innerHTML = items.map(i =>
+        `<a href="${esc(i.url)}" target="_blank" title="${esc(i.created_at)}"><img src="${esc(i.url)}" alt="Try-on"></a>`
+      ).join('');
+      card.style.display = 'block';
+    } catch {}
+  }
+
+  async function loadBodyState() {
+    try {
+      const res = await fetch('/settings/body-photo');
+      const data = await res.json();
+      hasBodyPhoto = !!data.path;
+      bodyPhotoUrl = data.url || null;
+    } catch { hasBodyPhoto = false; bodyPhotoUrl = null; }
+    renderBodyRow();
+  }
+
+  // The body-photo control is always visible so the flow is explicit — no
+  // surprise native file dialog on the first "See it on you" click.
+  function renderBodyRow() {
+    const row = document.getElementById('bodyPhotoRow');
+    if (hasBodyPhoto) {
+      row.innerHTML = `
+        <div class="body-thumb-row">
+          ${bodyPhotoUrl ? `<img src="${esc(bodyPhotoUrl)}" alt="Your photo">` : ''}
+          <span>Your try-on photo is set. <a href="#" onclick="changeBodyPhoto(event)">Change</a></span>
+        </div>
+        ${bodyWarning ? `<div class="body-warning">⚠️ ${esc(bodyWarning)}</div>` : ''}`;
+    } else {
+      row.innerHTML = `
+        <div class="body-upload-zone" onclick="changeBodyPhoto(event)">
+          <div class="t">🧍 Add a photo of yourself</div>
+          <div class="s">Needed once for try-on · front-facing, full-body works best</div>
+        </div>`;
+    }
+  }
+
+  function doTryon() {
+    if (!currentGarmentIds.length) return;
+    if (!hasBodyPhoto) {
+      document.getElementById('tryonStatus').textContent = '☝️ Add a photo of yourself first.';
+      return;
+    }
+    runTryon();
+  }
+
+  async function uploadBody(input) {
+    const file = input.files[0];
+    if (!file) return;
+    const status = document.getElementById('tryonStatus');
+    status.textContent = 'Saving your photo…';
+    const fd = new FormData();
+    fd.append('image', file);
+    try {
+      const res = await fetch('/settings/body-photo', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (data.error) { status.textContent = '⚠️ ' + data.error; return; }
+      hasBodyPhoto = true;
+      bodyPhotoUrl = data.url || null;
+      bodyWarning = data.warning || '';
+      renderBodyRow();
+      status.textContent = '';
+      // Auto-continue to the render now that the photo is set.
+      if (currentGarmentIds.length) runTryon();
+    } catch {
+      status.textContent = '⚠️ Could not save your photo.';
+    }
+  }
+
+  async function runTryon() {
+    const btn = document.getElementById('tryonBtn');
+    const status = document.getElementById('tryonStatus');
+    const out = document.getElementById('tryonResult');
+    btn.disabled = true;
+    status.textContent = 'Rendering you in this outfit — about 10–15 seconds…';
+    out.innerHTML = '';
+    try {
+      const res = await fetch('/suggest/tryon', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ garment_ids: currentGarmentIds })
+      });
+      const data = await res.json();
+      if (data.error === 'no_body_photo') {
+        hasBodyPhoto = false; bodyPhotoUrl = null; renderBodyRow();
+        status.textContent = '☝️ Add a photo of yourself first.';
+        btn.disabled = false;
+        return;
+      }
+      if (data.error) {
+        status.textContent = '⚠️ ' + data.error;
+        loadUsage();  // a cap may have just been hit
+        btn.disabled = false;
+        return;
+      }
+      out.innerHTML = `<img src="${esc(data.url)}" alt="You in this outfit">`;
+      status.textContent = '';
+      document.getElementById('tryonHint').textContent =
+        'AI-generated preview — proportions and likeness are approximate.';
+      loadUsage();
+      loadGallery();
+    } catch {
+      status.textContent = '⚠️ Try-on failed. Try again.';
+    }
+    btn.disabled = false;
+  }
+
+  function changeBodyPhoto(e) {
+    if (e) e.preventDefault();
+    document.getElementById('bodyInput').click();
+  }
+
+  // Chat
+  const chatMessages = [];  // {role, content} turns sent back so follow-ups have context
+
+  function addMsg(text, role) {
+    const history = document.getElementById('chatHistory');
+    const msg = document.createElement('div');
+    msg.className = `msg msg-${role}`;
+    msg.textContent = text;
+    history.appendChild(msg);
+    history.scrollTop = history.scrollHeight;
+  }
+
+  async function sendMessage() {
+    const input = document.getElementById('chatInput');
+    const btn = document.getElementById('sendBtn');
+    const status = document.getElementById('chatStatus');
+    const query = input.value.trim();
+    if (!query) return;
+
+    const history = chatMessages.slice(-12);
+    addMsg(query, 'user');
+    chatMessages.push({ role: 'user', content: query });
+    input.value = '';
+    btn.disabled = true;
+    status.textContent = 'Thinking...';
+
+    try {
+      const res = await fetch('/ask', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, history })
+      });
+      const data = await res.json();
+      const reply = data.answer || data.error || 'Sorry, something went wrong.';
+      addMsg(reply, 'ai');
+      chatMessages.push({ role: 'assistant', content: reply });
+      status.textContent = '';
+    } catch {
+      addMsg('Sorry, something went wrong.', 'ai');
+      chatMessages.push({ role: 'assistant', content: 'Sorry, something went wrong.' });
+      status.textContent = '';
+    }
+    btn.disabled = false;
+  }
+</script>
+{% endblock %}

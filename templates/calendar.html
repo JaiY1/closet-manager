@@ -1,0 +1,308 @@
+{% extends "base.html" %}
+{% block title %}Closet — Calendar{% endblock %}
+
+{% block content %}
+<style>
+  .two-col {
+    display: grid;
+    grid-template-columns: 380px 1fr;
+    gap: 24px;
+    align-items: start;
+  }
+  @media (max-width: 750px) { .two-col { grid-template-columns: 1fr; } }
+
+  /* Log form */
+  .garment-list {
+    max-height: 320px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 12px;
+  }
+
+  .garment-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 9px;
+    border-radius: 10px;
+    cursor: pointer;
+    border: 2px solid transparent;
+    background: var(--sunken);
+    transition: background 0.1s, border-color 0.1s;
+  }
+  .garment-row:hover { border-color: var(--line); }
+  .garment-row.selected { background: var(--accent-soft); border-color: var(--accent); }
+
+  .garment-thumb {
+    width: 38px;
+    height: 38px;
+    border-radius: 8px;
+    border: 1.5px solid var(--line);
+    background: var(--sunken);
+    object-fit: cover;
+    font-size: 1.2rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    overflow: hidden;
+  }
+  .garment-thumb img { width: 100%; height: 100%; object-fit: cover; }
+
+  .garment-row-info { flex: 1; min-width: 0; }
+  .garment-row-name { font-family: var(--font-display); font-size: 0.85rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .garment-row-sub  { font-size: 0.72rem; color: var(--muted); }
+
+  .checkmark {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    border: 2px solid var(--line);
+    background: var(--surface);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.65rem;
+    color: transparent;
+    flex-shrink: 0;
+    transition: all 0.1s;
+  }
+  .garment-row.selected .checkmark { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  /* Feed */
+  .log-entry {
+    background: var(--surface);
+    border: 2px solid var(--line);
+    border-radius: 12px;
+    padding: 14px 18px;
+    margin-bottom: 12px;
+  }
+
+  .log-date {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--accent);
+    font-weight: 500;
+    margin-bottom: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+
+  .log-items {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .log-thumb {
+    width: 52px;
+    height: 52px;
+    border-radius: 8px;
+    border: 1.5px solid var(--line);
+    background: var(--sunken);
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.4rem;
+    flex-shrink: 0;
+    position: relative;
+  }
+  .log-thumb img { width: 100%; height: 100%; object-fit: cover; }
+  .log-thumb-label {
+    font-size: 0.68rem;
+    color: var(--muted);
+    text-align: center;
+    max-width: 52px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .log-item-wrap { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+
+  .log-notes {
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin-top: 10px;
+    font-style: italic;
+  }
+
+  .empty-feed {
+    color: var(--muted);
+    text-align: center;
+    padding: 40px 20px;
+    border: 2px dashed var(--line);
+    border-radius: 12px;
+  }
+</style>
+
+<h1>Outfit Calendar</h1>
+
+<div class="two-col">
+
+  <!-- Log form -->
+  <div>
+    <div class="card card--pop">
+      <h2>Log Today's Outfit</h2>
+
+      <label>Date</label>
+      <input type="date" id="logDate" value="{{ '' }}">
+
+      <label style="margin-bottom:8px">Select what you wore</label>
+
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+        <label for="fitPhoto" class="btn btn-ghost btn-sm" style="cursor:pointer;margin:0">
+          📷 Scan outfit photo
+        </label>
+        <input type="file" id="fitPhoto" accept="image/*" capture="environment" style="display:none" onchange="scanOutfit(this)">
+        <span id="scanStatus" style="font-family:var(--font-mono);font-size:0.74rem;color:var(--muted)"></span>
+      </div>
+
+      <div class="garment-list" id="garmentList">
+        {% for g in garments %}
+        <div class="garment-row" data-id="{{ g.id }}" data-name="{{ g.name }}" onclick="toggleSelect(this)">
+          <div class="garment-thumb">
+            {% if g.image_path %}
+              <img src="/static/{{ g.image_path }}" alt="">
+            {% else %}
+              👕
+            {% endif %}
+          </div>
+          <div class="garment-row-info">
+            <div class="garment-row-name">{{ g.name }}</div>
+            <div class="garment-row-sub">{{ g.color }}{% if g.color and g.type %} · {% endif %}{{ g.type }}</div>
+          </div>
+          <div class="checkmark">✓</div>
+        </div>
+        {% endfor %}
+      </div>
+
+      <label>Notes <span style="font-size:0.75rem;color:var(--muted);text-transform:none">(optional)</span></label>
+      <input type="text" id="logNotes" placeholder="e.g. Work presentation">
+
+      <button class="btn btn-primary" style="width:100%" onclick="logOutfit()">Log Outfit</button>
+      <div class="status" id="logStatus"></div>
+    </div>
+  </div>
+
+  <!-- Calendar feed -->
+  <div>
+    <h2>Recent History</h2>
+
+    {% if logs %}
+      {% for log in logs %}
+      <div class="log-entry">
+        <div class="log-date">{{ log.date }}</div>
+        <div class="log-items">
+          {% if log.garments %}
+            {% for g in log.garments %}
+            <div class="log-item-wrap">
+              <div class="log-thumb">
+                {% if g.image_path %}
+                  <img src="/static/{{ g.image_path }}" alt="">
+                {% else %}
+                  👕
+                {% endif %}
+              </div>
+              <div class="log-thumb-label">{{ g.name }}</div>
+            </div>
+            {% endfor %}
+          {% else %}
+            <span style="color:var(--muted);font-size:0.85rem">No items recorded</span>
+          {% endif %}
+        </div>
+        {% if log.notes %}<div class="log-notes">{{ log.notes }}</div>{% endif %}
+      </div>
+      {% endfor %}
+    {% else %}
+      <div class="empty-feed">
+        <div style="font-size:2.5rem;margin-bottom:12px">📅</div>
+        <p>No outfit history yet.</p>
+        <p style="margin-top:6px;font-size:0.85rem">Log what you wear each day to build your history.</p>
+      </div>
+    {% endif %}
+  </div>
+
+</div>
+
+<script>
+  // Set date to today
+  const today = new Date().toISOString().split('T')[0];
+  document.getElementById('logDate').value = today;
+
+  let selectedIds = new Set();
+
+  function toggleSelect(row) {
+    const id = parseInt(row.dataset.id);
+    if (selectedIds.has(id)) {
+      selectedIds.delete(id);
+      row.classList.remove('selected');
+    } else {
+      selectedIds.add(id);
+      row.classList.add('selected');
+    }
+  }
+
+  async function scanOutfit(input) {
+    if (!input.files[0]) return;
+    const status = document.getElementById('scanStatus');
+    status.textContent = 'Scanning…';
+
+    const fd = new FormData();
+    fd.append('image', input.files[0]);
+
+    try {
+      const res = await fetch('/calendar/detect', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (data.error) { status.textContent = 'Could not detect outfit.'; return; }
+
+      // Clear current selection then select detected IDs
+      selectedIds.clear();
+      document.querySelectorAll('.garment-row.selected').forEach(r => r.classList.remove('selected'));
+
+      data.detected_ids.forEach(id => {
+        const row = document.querySelector(`.garment-row[data-id="${id}"]`);
+        if (row) { selectedIds.add(id); row.classList.add('selected'); }
+      });
+
+      status.textContent = data.detected_ids.length
+        ? `${data.detected_ids.length} item${data.detected_ids.length > 1 ? 's' : ''} detected`
+        : 'No matching items found';
+    } catch (e) {
+      status.textContent = 'Scan failed.';
+    }
+  }
+
+  async function logOutfit() {
+    const date = document.getElementById('logDate').value;
+    if (!date) {
+      document.getElementById('logStatus').textContent = 'Pick a date.';
+      return;
+    }
+    if (selectedIds.size === 0) {
+      document.getElementById('logStatus').textContent = 'Select at least one item.';
+      return;
+    }
+
+    const res = await fetch('/calendar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        date,
+        garment_ids: [...selectedIds],
+        notes: document.getElementById('logNotes').value
+      })
+    });
+
+    if (res.ok) {
+      document.getElementById('logStatus').textContent = 'Logged!';
+      setTimeout(() => location.reload(), 700);
+    } else {
+      document.getElementById('logStatus').textContent = 'Failed to log.';
+    }
+  }
+</script>
+{% endblock %}

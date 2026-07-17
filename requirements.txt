@@ -1,0 +1,8 @@
+flask
+anthropic
+google-genai
+chromadb
+Pillow
+python-dotenv
+gunicorn
+requests

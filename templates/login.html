@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Closet — Log in</title>
+  <link rel="manifest" href="/static/manifest.json">
+  <meta name="theme-color" content="#e8590c">
+  <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:          #faf7f0;
+      --surface:     #ffffff;
+      --line:        #1a1a1a;
+      --text:        #1a1a1a;
+      --muted:       #7a7365;
+      --accent:      #e8590c;
+      --accent-soft: #fff2e8;
+      --accent-hover:#cf4d08;
+      --danger:      #c0392b;
+      --font-display:'Space Grotesk', sans-serif;
+      --font-body:   'DM Sans', sans-serif;
+      --font-mono:   'IBM Plex Mono', monospace;
+    }
+
+    body {
+      font-family: var(--font-body);
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+
+    .login-card {
+      background: var(--surface);
+      border: 2px solid var(--line);
+      border-radius: 16px;
+      padding: 40px;
+      width: 100%;
+      max-width: 380px;
+      box-shadow: 8px 8px 0 var(--line);
+    }
+
+    .brand {
+      font-family: var(--font-display);
+      font-size: 1.9rem;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: -1px;
+      margin-bottom: 4px;
+    }
+    .brand span { color: var(--accent); }
+
+    .subtitle {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: var(--muted);
+      margin-bottom: 28px;
+    }
+
+    label {
+      display: block;
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      margin-bottom: 6px;
+    }
+
+    input[type="text"] {
+      width: 100%;
+      padding: 11px 14px;
+      background: var(--surface);
+      border: 2px solid var(--line);
+      border-radius: 10px;
+      color: var(--text);
+      font-size: 0.95rem;
+      margin-bottom: 18px;
+      outline: none;
+      font-family: inherit;
+      transition: box-shadow 0.15s;
+    }
+    input:focus { box-shadow: 0 0 0 3px var(--accent-soft); }
+
+    .btn-primary {
+      width: 100%;
+      font-family: var(--font-display);
+      padding: 12px 20px;
+      border-radius: 10px;
+      font-size: 0.9rem;
+      font-weight: 700;
+      cursor: pointer;
+      border: 2px solid var(--line);
+      background: var(--accent);
+      color: #fff;
+      transition: background 0.15s, transform 0.05s;
+    }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-primary:active { transform: translate(1px, 1px); }
+
+    .hint {
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-top: 18px;
+      line-height: 1.55;
+    }
+
+    .error {
+      font-size: 0.85rem;
+      color: var(--danger);
+      background: #fbeae8;
+      border: 1.5px solid var(--danger);
+      border-radius: 8px;
+      padding: 8px 12px;
+      margin-bottom: 18px;
+    }
+  </style>
+</head>
+<body>
+
+<div class="login-card">
+  <div class="brand">POP<span>.</span></div>
+  <div class="subtitle">Your closet</div>
+  <form method="POST" action="/login">
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    <label>Your name</label>
+    <input type="text" name="name" placeholder="e.g. Jai Yadav" autofocus required>
+    {% if require_code %}
+    <label>Access code</label>
+    <input type="password" name="code" placeholder="Enter the access code" required>
+    {% endif %}
+    <button type="submit" class="btn-primary">Continue</button>
+  </form>
+  <p class="hint">{% if require_code %}Enter your name and the shared access code.{% else %}No password needed — just your name. New names create a fresh, empty closet.{% endif %}</p>
+</div>
+
+</body>
+</html>

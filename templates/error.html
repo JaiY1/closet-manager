@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>POP — {{ code }}</title>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=DM+Sans:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'DM Sans', sans-serif;
+      background: #faf7f0; color: #1a1a1a;
+      min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px;
+    }
+    .box {
+      background: #fff; border: 2px solid #1a1a1a; border-radius: 16px;
+      padding: 40px; max-width: 420px; text-align: center; box-shadow: 8px 8px 0 #1a1a1a;
+    }
+    .code { font-family: 'Space Grotesk', sans-serif; font-size: 3rem; font-weight: 700; color: #e8590c; }
+    .msg { margin: 12px 0 24px; font-size: 1rem; line-height: 1.5; color: #4a4a4a; }
+    a.btn {
+      display: inline-block; font-family: 'Space Grotesk', sans-serif; font-weight: 700;
+      text-decoration: none; padding: 11px 20px; border-radius: 10px;
+      border: 2px solid #1a1a1a; background: #e8590c; color: #fff;
+    }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <div class="code">{{ code }}</div>
+    <p class="msg">{{ message }}</p>
+    <a class="btn" href="/">Back to your closet</a>
+  </div>
+</body>
+</html>

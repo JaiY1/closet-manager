@@ -1,0 +1,314 @@
+{% extends "base.html" %}
+{% block title %}Closet — Shop{% endblock %}
+
+{% block content %}
+<style>
+  /* ===== Shop (Pop) ===== */
+  .shop-intro {
+    font-size: 0.95rem;
+    color: var(--muted);
+    margin: -8px 0 22px;
+    max-width: 640px;
+    line-height: 1.5;
+  }
+  .shop-intro .sim  { color: var(--success); font-weight: 600; }
+  .shop-intro .diff { color: var(--accent);  font-weight: 600; }
+
+  .gaps-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 4px;
+  }
+  .gaps-head h2 { margin-bottom: 0; }
+
+  .gap-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 12px;
+    margin-top: 14px;
+  }
+  .gap-card {
+    background: var(--bg);
+    border: 2px solid var(--line);
+    border-radius: 12px;
+    padding: 15px;
+  }
+  .gap-category { font-family: var(--font-display); font-weight: 700; font-size: 0.95rem; margin-bottom: 6px; }
+  .gap-reason   { font-size: 0.82rem; color: var(--muted); line-height: 1.5; margin-bottom: 12px; }
+
+  .search-row { display: flex; gap: 10px; }
+  .search-row input#shopQuery { flex: 1; margin-bottom: 0; }
+  .search-row input#maxPrice  { width: 120px; margin-bottom: 0; }
+  .search-row button { flex-shrink: 0; width: auto; padding: 11px 20px; }
+
+  .shop-grid, .wishlist-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+    gap: 16px;
+    margin-top: 20px;
+  }
+
+  .shop-card {
+    background: var(--surface);
+    border: 2px solid var(--line);
+    border-radius: 12px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .shop-card-img {
+    width: 100%;
+    aspect-ratio: 1;
+    background:
+      repeating-linear-gradient(45deg, #f3efe6, #f3efe6 8px, #ece7da 8px, #ece7da 16px);
+    border-bottom: 2px solid var(--line);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    position: relative;
+  }
+  .shop-card-img img { width: 100%; height: 100%; object-fit: cover; }
+
+  .shop-card-body { padding: 13px 14px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
+
+  .shop-badge {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    font-family: var(--font-display);
+    font-size: 0.66rem;
+    font-weight: 600;
+    letter-spacing: 0.2px;
+    padding: 3px 9px;
+    border-radius: 20px;
+    border: 1.5px solid var(--line);
+  }
+  .shop-badge.similar   { background: #d8f0e2;         color: var(--success); }
+  .shop-badge.different { background: var(--accent-soft); color: var(--accent); }
+
+  .shop-card-title  { font-family: var(--font-display); font-size: 0.9rem; font-weight: 700; line-height: 1.35; }
+  .shop-card-meta   { font-family: var(--font-mono); font-size: 0.76rem; color: var(--text); }
+  .shop-card-reason { font-size: 0.8rem; color: var(--muted); line-height: 1.5; margin-top: 2px; }
+
+  .shop-card-actions {
+    margin-top: auto;
+    padding-top: 10px;
+    display: flex;
+    gap: 8px;
+  }
+  .shop-card-actions .btn { flex: 1; }
+
+  .wishlist-empty { font-size: 0.88rem; color: var(--muted); margin-top: 12px; }
+</style>
+
+<h1>Shop your gaps</h1>
+<p class="shop-intro">
+  Every result is scored against your actual style —
+  <span class="sim">similar</span> to what you own, or
+  <span class="diff">something different</span>.
+</p>
+
+<div class="card card--pop">
+  <div class="gaps-head">
+    <h2>Wardrobe Gaps</h2>
+    <button class="btn btn-ghost btn-pill btn-sm" id="gapsBtn" onclick="loadGaps()">Find gaps</button>
+  </div>
+  <p style="font-size:0.82rem;color:var(--muted)">Claude reviews your wardrobe and style profile and flags what's genuinely missing.</p>
+  <div class="status" id="gapsStatus"></div>
+  <div class="gap-grid" id="gapsGrid"></div>
+</div>
+
+<div class="card card--pop">
+  <h2>Search</h2>
+  <div class="search-row">
+    <input type="text" id="shopQuery" placeholder="e.g. navy wool trousers, white sneakers" onkeydown="if(event.key==='Enter')runSearch()">
+    <input type="text" id="maxPrice" placeholder="Max $ (optional)" onkeydown="if(event.key==='Enter')runSearch()">
+    <button class="btn btn-primary" id="searchBtn" onclick="runSearch()">Search</button>
+  </div>
+  <div class="status" id="shopStatus"></div>
+  <div class="shop-grid" id="shopGrid"></div>
+</div>
+
+<div class="card card--pop">
+  <h2>Wishlist</h2>
+  <div class="status" id="wishlistStatus"></div>
+  <div class="wishlist-empty" id="wishlistEmpty" style="display:none">Nothing saved yet — search above and hit Save on something you like.</div>
+  <div class="wishlist-grid" id="wishlistGrid"></div>
+</div>
+
+<script>
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  let lastResults = [];
+
+  window.addEventListener('DOMContentLoaded', loadWishlist);
+
+  async function loadGaps() {
+    const btn = document.getElementById('gapsBtn');
+    const status = document.getElementById('gapsStatus');
+    const grid = document.getElementById('gapsGrid');
+    btn.disabled = true;
+    status.textContent = 'Analyzing your wardrobe...';
+    grid.innerHTML = '';
+
+    try {
+      const res = await fetch('/shop/gaps');
+      const data = await res.json();
+      if (data.error) { status.textContent = data.error; btn.disabled = false; return; }
+
+      const gaps = data.gaps || [];
+      if (!gaps.length) {
+        status.textContent = 'No clear gaps found — or add some garments first.';
+      } else {
+        status.textContent = '';
+        gaps.forEach(g => {
+          const card = document.createElement('div');
+          card.className = 'gap-card';
+          card.innerHTML = `
+            <div class="gap-category">${esc(g.category)}</div>
+            <div class="gap-reason">${esc(g.reason)}</div>
+            <button class="btn btn-primary btn-pill btn-sm" onclick="shopGap('${esc(g.search_query).replace(/'/g, "\\'")}')">Shop this →</button>
+          `;
+          grid.appendChild(card);
+        });
+      }
+    } catch {
+      status.textContent = 'Failed to load gaps.';
+    }
+    btn.disabled = false;
+  }
+
+  function shopGap(query) {
+    document.getElementById('shopQuery').value = query;
+    runSearch();
+  }
+
+  async function runSearch() {
+    const input = document.getElementById('shopQuery');
+    const maxPriceInput = document.getElementById('maxPrice');
+    const btn = document.getElementById('searchBtn');
+    const status = document.getElementById('shopStatus');
+    const grid = document.getElementById('shopGrid');
+    const query = input.value.trim();
+    if (!query) return;
+
+    const maxPriceVal = maxPriceInput.value.trim();
+    const body = { query };
+    if (maxPriceVal) body.max_price = maxPriceVal;
+
+    btn.disabled = true;
+    status.textContent = 'Searching and comparing against your style...';
+    grid.innerHTML = '';
+
+    try {
+      const res = await fetch('/shop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const data = await res.json();
+      if (data.error) { status.textContent = data.error; btn.disabled = false; return; }
+
+      const results = data.results || [];
+      lastResults = results;
+      if (!results.length) {
+        status.textContent = 'No results found.';
+      } else {
+        status.textContent = '';
+        results.forEach((r, idx) => {
+          const card = document.createElement('div');
+          card.className = 'shop-card';
+          const badgeClass = r.category === 'similar' ? 'similar' : 'different';
+          const badgeLabel = r.category === 'similar' ? 'Similar to yours' : 'Something different';
+          const imgHtml = r.image
+            ? `<div class="shop-card-img"><span class="shop-badge ${badgeClass}">${badgeLabel}</span><img src="${esc(r.image)}" alt=""></div>`
+            : `<div class="shop-card-img"><span class="shop-badge ${badgeClass}">${badgeLabel}</span></div>`;
+          card.innerHTML = `
+            ${imgHtml}
+            <div class="shop-card-body">
+              <div class="shop-card-title">${esc(r.title)}</div>
+              <div class="shop-card-meta">${esc(r.price || '')}${r.source ? ' · ' + esc(r.source) : ''}</div>
+              <div class="shop-card-reason">${esc(r.reasoning || '')}</div>
+              <div class="shop-card-actions">
+                <a href="${esc(r.link)}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm">View</a>
+                <button class="btn btn-primary btn-sm" onclick="saveToWishlist(${idx}, this)">Save</button>
+              </div>
+            </div>
+          `;
+          grid.appendChild(card);
+        });
+      }
+    } catch {
+      status.textContent = 'Search failed.';
+    }
+    btn.disabled = false;
+  }
+
+  async function saveToWishlist(idx, btn) {
+    const r = lastResults[idx];
+    if (!r) return;
+    btn.disabled = true;
+    try {
+      await fetch('/wishlist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(r)
+      });
+      btn.textContent = '✓ Saved';
+      loadWishlist();
+    } catch {
+      btn.textContent = 'Failed';
+      btn.disabled = false;
+    }
+  }
+
+  async function loadWishlist() {
+    const status = document.getElementById('wishlistStatus');
+    const empty = document.getElementById('wishlistEmpty');
+    const grid = document.getElementById('wishlistGrid');
+    try {
+      const res = await fetch('/wishlist');
+      const data = await res.json();
+      const items = data.items || [];
+      grid.innerHTML = '';
+      empty.style.display = items.length ? 'none' : 'block';
+      status.textContent = '';
+      items.forEach(item => {
+        const card = document.createElement('div');
+        card.className = 'shop-card';
+        const imgHtml = item.image
+          ? `<div class="shop-card-img"><img src="${esc(item.image)}" alt=""></div>`
+          : `<div class="shop-card-img"></div>`;
+        card.innerHTML = `
+          ${imgHtml}
+          <div class="shop-card-body">
+            <div class="shop-card-title">${esc(item.title)}</div>
+            <div class="shop-card-meta">${esc(item.price || '')}${item.source ? ' · ' + esc(item.source) : ''}</div>
+            <div class="shop-card-actions">
+              <a href="${esc(item.link)}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm">View</a>
+              <button class="btn btn-danger btn-sm" onclick="removeFromWishlist(${item.id}, this)">Remove</button>
+            </div>
+          </div>
+        `;
+        grid.appendChild(card);
+      });
+    } catch {
+      status.textContent = 'Failed to load wishlist.';
+    }
+  }
+
+  async function removeFromWishlist(id, btn) {
+    btn.disabled = true;
+    try {
+      await fetch(`/wishlist/${id}`, { method: 'DELETE' });
+      loadWishlist();
+    } catch {
+      btn.disabled = false;
+    }
+  }
+</script>
+{% endblock %}

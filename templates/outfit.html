@@ -1,0 +1,344 @@
+{% extends "base.html" %}
+{% block title %}Closet — Outfits{% endblock %}
+
+{% block content %}
+<style>
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    align-items: start;
+  }
+
+  @media (max-width: 700px) { .two-col { grid-template-columns: 1fr; } }
+
+  /* Garment picker */
+  .picker-search {
+    margin-bottom: 12px;
+  }
+
+  .garment-list {
+    max-height: 400px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 16px;
+  }
+
+  .garment-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    cursor: pointer;
+    border: 2px solid transparent;
+    background: var(--sunken);
+    transition: background 0.1s, border-color 0.1s;
+  }
+  .garment-row:hover { border-color: var(--line); }
+  .garment-row.selected { background: var(--accent-soft); border-color: var(--accent); }
+
+  .garment-thumb {
+    width: 44px;
+    height: 44px;
+    border-radius: 8px;
+    border: 1.5px solid var(--line);
+    background: var(--sunken);
+    object-fit: cover;
+    font-size: 1.4rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    overflow: hidden;
+  }
+  .garment-thumb img { width: 100%; height: 100%; object-fit: cover; }
+
+  .garment-row-info { flex: 1; min-width: 0; }
+  .garment-row-name { font-family: var(--font-display); font-size: 0.875rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .garment-row-sub  { font-size: 0.75rem; color: var(--muted); }
+
+  .checkmark {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: 2px solid var(--line);
+    background: var(--surface);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.7rem;
+    color: transparent;
+    flex-shrink: 0;
+    transition: all 0.1s;
+  }
+  .garment-row.selected .checkmark {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+
+  /* Selected preview */
+  .selection-preview {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 16px;
+    min-height: 36px;
+  }
+
+  .sel-chip {
+    background: var(--accent-soft);
+    border: 1.5px solid var(--accent);
+    border-radius: 20px;
+    padding: 4px 12px;
+    font-size: 0.8rem;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .sel-chip button {
+    background: none;
+    border: none;
+    color: var(--accent);
+    cursor: pointer;
+    font-size: 0.8rem;
+    padding: 0;
+    line-height: 1;
+  }
+
+  /* Saved outfits */
+  .outfit-card {
+    background: var(--surface);
+    border: 2px solid var(--line);
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 12px;
+  }
+
+  .outfit-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+
+  .outfit-name { font-family: var(--font-display); font-weight: 700; font-size: 0.95rem; }
+  .outfit-occasion { font-size: 0.75rem; color: var(--muted); }
+
+  .outfit-items {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+  }
+
+  .item-chip {
+    font-size: 0.78rem;
+    font-weight: 500;
+    padding: 3px 10px;
+    border-radius: 20px;
+    background: var(--sunken);
+    border: 1.5px solid var(--line);
+    color: var(--text);
+  }
+
+  .star-display { color: var(--accent); font-size: 0.95rem; letter-spacing: 1px; }
+</style>
+
+<h1>Outfits</h1>
+
+<div class="two-col">
+
+  <!-- Left: Builder -->
+  <div>
+    <div class="card card--pop">
+      <h2>Build an Outfit</h2>
+
+      {% if garments %}
+      <label>Search garments</label>
+      <input type="text" class="picker-search" id="pickerSearch" placeholder="Filter by name or color..." oninput="filterPicker()">
+
+      <div class="garment-list" id="garmentList">
+        {% for g in garments %}
+        <div class="garment-row" data-id="{{ g.id }}" data-name="{{ g.name }}" onclick="toggleSelect(this)">
+          <div class="garment-thumb">
+            {% if g.image_path %}
+              <img src="/static/{{ g.image_path }}" alt="">
+            {% else %}
+              👕
+            {% endif %}
+          </div>
+          <div class="garment-row-info">
+            <div class="garment-row-name">{{ g.name }}</div>
+            <div class="garment-row-sub">{{ g.color }}{% if g.color and g.type %} · {% endif %}{{ g.type }}</div>
+          </div>
+          <div class="checkmark">✓</div>
+        </div>
+        {% endfor %}
+      </div>
+
+      <div style="margin-bottom:12px">
+        <label>Selected items</label>
+        <div class="selection-preview" id="selectionPreview">
+          <span style="color:var(--muted);font-size:0.85rem">None selected</span>
+        </div>
+      </div>
+
+      <label>Outfit Name</label>
+      <input type="text" id="outfitName" placeholder="e.g. Smart Friday">
+
+      <div class="row">
+        <div>
+          <label>Occasion</label>
+          <select id="outfitOccasion">
+            <option value="">Any</option>
+            <option>casual</option>
+            <option>smart-casual</option>
+            <option>formal</option>
+            <option>athletic</option>
+          </select>
+        </div>
+        <div>
+          <label>Rating</label>
+          <div class="stars" id="starRating">
+            <span class="star" data-v="1">★</span>
+            <span class="star" data-v="2">★</span>
+            <span class="star" data-v="3">★</span>
+            <span class="star" data-v="4">★</span>
+            <span class="star" data-v="5">★</span>
+          </div>
+          <input type="hidden" id="outfitRating" value="0">
+        </div>
+      </div>
+
+      <label>Notes</label>
+      <input type="text" id="outfitNotes" placeholder="Optional notes about this look...">
+
+      <button class="btn btn-primary" style="width:100%;margin-top:4px" onclick="saveOutfit()">Save Outfit</button>
+      <div class="status" id="saveStatus"></div>
+
+      {% else %}
+      <p style="color:var(--muted)">Add garments to your closet first.</p>
+      <a href="/add" class="btn btn-primary" style="margin-top:16px">Add Garment</a>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Right: Saved outfits -->
+  <div>
+    <h2>Saved Outfits ({{ outfits|length }})</h2>
+    {% if outfits %}
+      {% for o in outfits %}
+      <div class="outfit-card">
+        <div class="outfit-header">
+          <div>
+            <div class="outfit-name">{{ o.name }}</div>
+            {% if o.occasion %}<div class="outfit-occasion">{{ o.occasion }}</div>{% endif %}
+          </div>
+          <div class="star-display">
+            {% for i in range(o.rating) %}★{% endfor %}{% for i in range(5 - o.rating) %}☆{% endfor %}
+          </div>
+        </div>
+        <div class="outfit-items">
+          {% for g in o.garments %}
+          <span class="item-chip">{{ g.name }}</span>
+          {% endfor %}
+        </div>
+        {% if o.notes %}<div style="font-size:0.8rem;color:var(--muted);margin-top:8px">{{ o.notes }}</div>{% endif %}
+      </div>
+      {% endfor %}
+    {% else %}
+      <p style="color:var(--muted)">No outfits saved yet.</p>
+    {% endif %}
+  </div>
+
+</div>
+
+<script>
+  let selectedIds = new Set();
+  let rating = 0;
+
+  function toggleSelect(row) {
+    const id = parseInt(row.dataset.id);
+    if (selectedIds.has(id)) {
+      selectedIds.delete(id);
+      row.classList.remove('selected');
+    } else {
+      selectedIds.add(id);
+      row.classList.add('selected');
+    }
+    updatePreview();
+  }
+
+  function updatePreview() {
+    const preview = document.getElementById('selectionPreview');
+    if (selectedIds.size === 0) {
+      preview.innerHTML = '<span style="color:var(--muted);font-size:0.85rem">None selected</span>';
+      return;
+    }
+    let html = '';
+    selectedIds.forEach(id => {
+      const row = document.querySelector(`.garment-row[data-id="${id}"]`);
+      if (row) {
+        html += `<span class="sel-chip">${row.dataset.name}
+          <button onclick="deselect(${id})">✕</button></span>`;
+      }
+    });
+    preview.innerHTML = html;
+  }
+
+  function deselect(id) {
+    selectedIds.delete(id);
+    const row = document.querySelector(`.garment-row[data-id="${id}"]`);
+    if (row) row.classList.remove('selected');
+    updatePreview();
+  }
+
+  function filterPicker() {
+    const q = document.getElementById('pickerSearch').value.toLowerCase();
+    document.querySelectorAll('.garment-row').forEach(row => {
+      row.style.display = row.dataset.name.toLowerCase().includes(q) ? '' : 'none';
+    });
+  }
+
+  // Star rating
+  document.querySelectorAll('.star').forEach(star => {
+    star.addEventListener('click', () => {
+      rating = parseInt(star.dataset.v);
+      document.getElementById('outfitRating').value = rating;
+      document.querySelectorAll('.star').forEach(s => {
+        s.classList.toggle('on', parseInt(s.dataset.v) <= rating);
+      });
+    });
+  });
+
+  async function saveOutfit() {
+    if (selectedIds.size === 0) {
+      document.getElementById('saveStatus').textContent = 'Select at least one garment.';
+      return;
+    }
+    const name = document.getElementById('outfitName').value.trim() || 'Untitled Outfit';
+    const res = await fetch('/outfits', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name,
+        occasion: document.getElementById('outfitOccasion').value,
+        rating: parseInt(document.getElementById('outfitRating').value) || 0,
+        notes: document.getElementById('outfitNotes').value,
+        garment_ids: [...selectedIds]
+      })
+    });
+    if (res.ok) {
+      document.getElementById('saveStatus').textContent = 'Outfit saved!';
+      setTimeout(() => location.reload(), 800);
+    } else {
+      document.getElementById('saveStatus').textContent = 'Failed to save.';
+    }
+  }
+</script>
+{% endblock %}

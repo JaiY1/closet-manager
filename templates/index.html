@@ -1,0 +1,357 @@
+{% extends "base.html" %}
+{% block title %}Closet — Catalog{% endblock %}
+
+{% block content %}
+<style>
+  .toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 24px;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .filters {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .filter-btn {
+    font-family: var(--font-display);
+    padding: 8px 16px;
+    border-radius: 40px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+    border: 2px solid var(--line);
+    background: transparent;
+    color: var(--text);
+    transition: all 0.15s;
+  }
+  .filter-btn:hover { background: var(--sunken); }
+  .filter-btn.active {
+    background: var(--accent);
+    border-color: var(--line);
+    color: #fff;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 16px;
+  }
+
+  .garment-card {
+    background: var(--surface);
+    border: 2px solid var(--line);
+    border-radius: 12px;
+    overflow: hidden;
+    transition: transform 0.1s, box-shadow 0.15s;
+    position: relative;
+  }
+  .garment-card:hover { box-shadow: var(--shadow); transform: translate(-2px, -2px); }
+
+  .garment-img {
+    width: 100%;
+    aspect-ratio: 3/4;
+    background:
+      repeating-linear-gradient(45deg, #f3efe6, #f3efe6 8px, #ece7da 8px, #ece7da 16px);
+    border-bottom: 2px solid var(--line);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+    font-size: 2.5rem;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .garment-img img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    position: absolute;
+    inset: 0;
+    transition: opacity 0.2s;
+  }
+
+  .gallery-arrow {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    background: var(--line);
+    color: #fff;
+    border: none;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    font-size: 0.75rem;
+    cursor: pointer;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 2;
+    transition: background 0.15s;
+  }
+  .gallery-arrow:hover { background: var(--accent); }
+  .gallery-arrow.prev { left: 6px; }
+  .gallery-arrow.next { right: 6px; }
+  .garment-card:hover .gallery-arrow { display: flex; }
+
+  .gallery-dots {
+    position: absolute;
+    bottom: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 4px;
+    z-index: 2;
+  }
+  .gallery-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: rgba(26,26,26,0.35);
+    transition: background 0.15s;
+  }
+  .gallery-dot.active { background: var(--accent); }
+
+  .garment-info {
+    padding: 12px;
+  }
+
+  .garment-name {
+    font-family: var(--font-display);
+    font-size: 0.9rem;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+    margin-bottom: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .garment-meta {
+    font-size: 0.78rem;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+
+  .garment-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-bottom: 8px;
+  }
+
+  .tag {
+    font-size: 0.7rem;
+    font-weight: 500;
+    padding: 2px 9px;
+    border-radius: 20px;
+    background: var(--sunken);
+    color: var(--text);
+    border: 1.5px solid var(--line);
+  }
+
+  .worn-badge {
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: 0.7rem;
+    color: var(--accent);
+    background: var(--accent-soft);
+    display: inline-block;
+    padding: 3px 9px;
+    border-radius: 20px;
+  }
+
+  .card-actions {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    display: none;
+    gap: 6px;
+    z-index: 3;
+  }
+  .garment-card:hover .card-actions { display: flex; }
+
+  .card-btn {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    background: var(--surface);
+    color: var(--text);
+    border: 2px solid var(--line);
+    cursor: pointer;
+    font-size: 0.75rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s, color 0.15s;
+    text-decoration: none;
+  }
+  .card-btn:hover { background: var(--line); color: #fff; }
+  .card-btn.danger:hover { background: var(--danger); border-color: var(--danger); color: #fff; }
+
+  .empty {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--muted);
+    border: 2px dashed var(--line);
+    border-radius: 14px;
+  }
+  .empty a { color: var(--accent); font-weight: 600; }
+
+  .profile-strip {
+    background: var(--accent);
+    border: 2px solid var(--line);
+    border-radius: 12px;
+    padding: 11px 16px;
+    margin-bottom: 22px;
+    font-size: 0.83rem;
+    line-height: 1.5;
+    color: var(--text);
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .profile-strip strong { font-family: var(--font-display); font-weight: 700; white-space: nowrap; }
+  .profile-text {
+    flex: 1;
+    min-width: 0;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .profile-strip.expanded .profile-text { -webkit-line-clamp: unset; }
+  .profile-toggle {
+    flex-shrink: 0;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    background: none;
+    border: none;
+    color: var(--text);
+    cursor: pointer;
+    text-decoration: underline;
+    padding: 0;
+  }
+</style>
+
+{% if profile and profile.summary %}
+<div class="profile-strip" id="profileStrip">
+  <strong>Your style:</strong>
+  <span class="profile-text">{{ profile.summary }}</span>
+  <button class="profile-toggle" onclick="document.getElementById('profileStrip').classList.toggle('expanded'); this.textContent = this.textContent === 'More' ? 'Less' : 'More';">More</button>
+</div>
+{% endif %}
+
+<div class="toolbar">
+  <div class="filters" id="filters">
+    <button class="filter-btn active" data-type="">All</button>
+    <button class="filter-btn" data-type="shirt">Shirts</button>
+    <button class="filter-btn" data-type="t-shirt">T-Shirts</button>
+    <button class="filter-btn" data-type="trousers">Trousers</button>
+    <button class="filter-btn" data-type="jeans">Jeans</button>
+    <button class="filter-btn" data-type="jacket">Jackets</button>
+    <button class="filter-btn" data-type="shoes">Shoes</button>
+    <button class="filter-btn" data-type="sneakers">Sneakers</button>
+  </div>
+  <div style="display:flex;gap:8px">
+    <a href="/add/photo" class="btn btn-ghost">📷 From Photo</a>
+    <a href="/add" class="btn btn-primary">+ Add Garment</a>
+  </div>
+</div>
+
+{% if garments %}
+<div class="grid" id="garmentGrid">
+  {% for g in garments %}
+  <div class="garment-card" data-type="{{ g.type }}">
+    <div class="card-actions">
+      <a href="/garments/{{ g.id }}/edit" class="card-btn" title="Edit">✎</a>
+      <button class="card-btn danger" onclick="deleteGarment({{ g.id }}, this)" title="Remove">✕</button>
+    </div>
+    {% set imgs = g.all_images %}
+    <div class="garment-img" data-images="{{ imgs | tojson | e }}" data-idx="0">
+      {% if imgs %}
+        {% for path in imgs %}
+        <img src="/static/{{ path }}" alt="{{ g.name }}" loading="lazy"
+             style="opacity:{{ '1' if loop.first else '0' }}">
+        {% endfor %}
+        {% if imgs | length > 1 %}
+        <button class="gallery-arrow prev" onclick="galleryStep(this,-1)">&#8249;</button>
+        <button class="gallery-arrow next" onclick="galleryStep(this,1)">&#8250;</button>
+        <div class="gallery-dots">
+          {% for _ in imgs %}
+          <div class="gallery-dot {{ 'active' if loop.first else '' }}"></div>
+          {% endfor %}
+        </div>
+        {% endif %}
+      {% else %}
+        👕
+      {% endif %}
+    </div>
+    <div class="garment-info">
+      <div class="garment-name" title="{{ g.name }}">{{ g.name }}</div>
+      <div class="garment-meta">
+        {{ g.color }}{% if g.color and g.brand %} · {% endif %}{{ g.brand }}
+        {% if g.fit %} · {{ g.fit }}{% endif %}
+      </div>
+      {% if g.tags %}
+      <div class="garment-tags">
+        {% for tag in g.tags[:3] %}<span class="tag">{{ tag }}</span>{% endfor %}
+      </div>
+      {% endif %}
+      <div class="worn-badge">worn {{ g.worn_count }}×</div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="empty">
+  <div style="font-size:3rem;margin-bottom:16px">👗</div>
+  <p>Your closet is empty.</p>
+  <p style="margin-top:8px"><a href="/add">Add your first garment</a> to get started.</p>
+</div>
+{% endif %}
+
+<script>
+  // Filter by type
+  document.querySelectorAll('.filter-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const type = btn.dataset.type;
+      document.querySelectorAll('.garment-card').forEach(card => {
+        card.style.display = (!type || card.dataset.type === type) ? '' : 'none';
+      });
+    });
+  });
+
+  function galleryStep(btn, dir) {
+    btn.stopPropagation && btn.stopPropagation();
+    const box = btn.closest('.garment-img');
+    const imgs = box.querySelectorAll('img');
+    const dots = box.querySelectorAll('.gallery-dot');
+    let idx = parseInt(box.dataset.idx || 0);
+    imgs[idx].style.opacity = '0';
+    dots[idx] && dots[idx].classList.remove('active');
+    idx = (idx + dir + imgs.length) % imgs.length;
+    imgs[idx].style.opacity = '1';
+    dots[idx] && dots[idx].classList.add('active');
+    box.dataset.idx = idx;
+  }
+
+  async function deleteGarment(id, btn) {
+    if (!confirm('Remove this item from your closet?')) return;
+    const card = btn.closest('.garment-card');
+    const res = await fetch(`/garments/${id}`, { method: 'DELETE' });
+    if (res.ok) card.remove();
+  }
+</script>
+{% endblock %}
