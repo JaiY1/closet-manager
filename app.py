@@ -4,6 +4,7 @@ import logging
 import os
 import secrets
 import shutil
+import tarfile
 import time
 import uuid
 from io import BytesIO
@@ -187,7 +188,7 @@ def _friendly_gemini_error(e) -> str:
 
 @app.before_request
 def require_login():
-    if request.endpoint in ('login_page', 'do_login', 'static', 'service_worker', 'serve_upload', 'healthz') or request.endpoint is None:
+    if request.endpoint in ('login_page', 'do_login', 'static', 'service_worker', 'serve_upload', 'healthz', 'admin_import_data') or request.endpoint is None:
         return
     if 'user_id' not in session:
         return redirect(url_for('login_page'))
@@ -226,6 +227,65 @@ def do_login():
 def logout():
     session.clear()
     return redirect(url_for('login_page'))
+
+
+# --- One-time local-to-server data migration ---
+# Platforms like Railway don't offer a shell/SFTP into the running container, so
+# this is the portable way to get a scripts/export_data.sh tarball onto the
+# server's DATA_DIR volume: POST it here instead. Gated by the same ACCESS_CODE
+# used for login (a deliberate choice — anyone who can log in via the UAT code
+# could also run this). Refuses entirely if ACCESS_CODE isn't set, since without
+# it there'd be no gate at all.
+
+_ADMIN_IMPORT_MAX_BYTES = 512 * 1024 * 1024  # generous for a full data export
+
+
+@app.before_request
+def _admin_import_upload_limit():
+    if request.endpoint == 'admin_import_data':
+        request.max_content_length = _ADMIN_IMPORT_MAX_BYTES
+
+
+@app.route("/admin/import-data", methods=["POST"])
+def admin_import_data():
+    """Extract a scripts/export_data.sh tarball into DATA_DIR, merging/overwriting
+    matching files. Usage: curl -F "code=<ACCESS_CODE>" -F "data=@closet-data-*.tar.gz" <url>/admin/import-data
+    Restart the app afterward so DB/vector-store connections see the new files."""
+    if not ACCESS_CODE:
+        return jsonify({"error": "ACCESS_CODE is not configured — refusing to run unguarded."}), 403
+    if (request.form.get('code') or '') != ACCESS_CODE:
+        return jsonify({"error": "Invalid or missing access code."}), 403
+    if 'data' not in request.files or not request.files['data'].filename:
+        return jsonify({"error": "No tarball provided (multipart field name: data)."}), 400
+
+    data_dir_resolved = DATA_DIR.resolve()
+    tmp_path = data_dir_resolved / f"_import_upload_{uuid.uuid4().hex}.tar.gz"
+    request.files['data'].save(tmp_path)
+
+    try:
+        with tarfile.open(tmp_path, "r:gz") as tar:
+            members = tar.getmembers()
+            for member in members:
+                # Reject path traversal, absolute paths, and symlinks before
+                # extracting anything — this archive came in over the network.
+                member_path = (data_dir_resolved / member.name).resolve()
+                if member_path != data_dir_resolved and data_dir_resolved not in member_path.parents:
+                    return jsonify({"error": f"Refusing unsafe path in archive: {member.name}"}), 400
+                if member.issym() or member.islnk():
+                    return jsonify({"error": f"Refusing symlink in archive: {member.name}"}), 400
+            tar.extractall(path=data_dir_resolved)
+            extracted_count = len(members)
+    except tarfile.TarError as e:
+        return jsonify({"error": f"Invalid tarball: {e}"}), 400
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    logger.info("Admin data import: extracted %d entries into %s", extracted_count, DATA_DIR)
+    return jsonify({
+        "ok": True,
+        "extracted_count": extracted_count,
+        "note": "Restart the app service now so the DB/vector-index pick up the new data.",
+    })
 
 
 @app.route("/sw.js")

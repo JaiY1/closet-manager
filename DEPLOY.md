@@ -70,7 +70,7 @@ right after the first deploy (before you rely on the UAT copy):
 
 Then get that file onto the server and extract it into `DATA_DIR`:
 
-**Fly.io**
+**Fly.io** (has a real remote shell/SFTP)
 ```bash
 fly ssh sftp shell
 > put closet-data-*.tar.gz /tmp/
@@ -79,13 +79,26 @@ fly ssh console -C "bash /app/scripts/import_data.sh /tmp/closet-data-*.tar.gz"
 fly apps restart <app-name>
 ```
 
-**Railway / Render**
-Use the platform's shell (Railway `railway run bash`, Render's Shell tab) to
-upload the tarball (or `curl` it from a temporary link) into the container, then:
+**Render** (has a Shell tab in the dashboard)
+Upload the tarball into the container via the Shell tab (or `curl` it from a
+temporary link), then:
 ```bash
 bash scripts/import_data.sh /path/to/closet-data-*.tar.gz
 ```
 Restart the service afterward.
+
+**Railway** (no remote shell/SFTP into the container — use the app's own HTTP endpoint instead)
+```bash
+curl -F "code=$ACCESS_CODE" -F "data=@closet-data-*.tar.gz" \
+     https://<your-app>.up.railway.app/admin/import-data
+```
+This hits `/admin/import-data` (`app.py`), which extracts the tarball straight
+into `DATA_DIR` — gated by the same `ACCESS_CODE` used for login, so
+`ACCESS_CODE` must be set for this to work at all. Then **restart the service**
+from the Railway dashboard so the DB/vector-store connections pick up the
+restored files. This endpoint works identically on any platform, not just
+Railway — it's the most portable option if you're ever unsure your platform
+offers real shell access.
 
 Logging in with the **same name** ("Jai Yadav") afterward loads the restored
 closet — nothing needs to be re-added through the UI. Do this once; after that,
