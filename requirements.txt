@@ -1,6 +1,7 @@
 flask
 anthropic
 google-genai
+rembg[cpu]
 chromadb
 Pillow
 python-dotenv
