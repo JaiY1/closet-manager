@@ -276,11 +276,19 @@
   }
 
   async function confirmAdd() {
-    const items = detected.filter(g => g.include).map(g => ({
-      name: g.name, type: g.type, color: g.color, brand: g.brand,
-      fit: g.fit, occasion: g.occasion, notes: g.notes,
-      cutout_b64: g.cutout_b64, crop_b64: g.crop_b64
-    }));
+    const items = detected.filter(g => g.include).map(g => {
+      const item = {
+        name: g.name, type: g.type, color: g.color, brand: g.brand,
+        fit: g.fit, occasion: g.occasion, notes: g.notes
+      };
+      // crop_b64 is the full source photo, not an actual crop — only send it
+      // when there's no cutout yet (opt-in mode). Sending both duplicates the
+      // whole photo per garment and can blow past the upload size cap on a
+      // multi-item outfit.
+      if (g.cutout_b64) item.cutout_b64 = g.cutout_b64;
+      else if (g.crop_b64) item.crop_b64 = g.crop_b64;
+      return item;
+    });
     if (!items.length) return;
     const btn = document.getElementById('addBtn');
     btn.disabled = true;
