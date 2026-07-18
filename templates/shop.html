@@ -37,10 +37,13 @@
   .gap-category { font-family: var(--font-display); font-weight: 700; font-size: 0.95rem; margin-bottom: 6px; }
   .gap-reason   { font-size: 0.82rem; color: var(--muted); line-height: 1.5; margin-bottom: 12px; }
 
-  .search-row { display: flex; gap: 10px; }
-  .search-row input#shopQuery { flex: 1; margin-bottom: 0; }
+  .search-row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .search-row input#shopQuery { flex: 1; min-width: 180px; margin-bottom: 0; }
   .search-row input#maxPrice  { width: 120px; margin-bottom: 0; }
   .search-row button { flex-shrink: 0; width: auto; padding: 11px 20px; }
+  @media (max-width: 480px) {
+    .search-row input#shopQuery, .search-row input#maxPrice, .search-row button { width: 100%; }
+  }
 
   .shop-grid, .wishlist-grid {
     display: grid;

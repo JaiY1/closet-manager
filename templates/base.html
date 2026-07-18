@@ -272,6 +272,77 @@
     .stars { display: flex; gap: 4px; }
     .star  { font-size: 1.25rem; cursor: pointer; color: var(--hair); transition: color 0.1s; }
     .star.on { color: var(--accent); }
+
+    /* ===== Mobile ===== */
+    @media (max-width: 720px) {
+      nav {
+        height: 54px;
+        padding: 0 16px;
+        justify-content: space-between;
+      }
+      .nav-brand { margin-right: 0; font-size: 1.1rem; }
+      /* hide top text links + user controls; bottom tab bar takes over wayfinding */
+      nav a:not(.nav-brand) { display: none; }
+      .nav-user { display: none; }
+
+      main { padding: 20px 16px 90px; }
+      h1 { font-size: 1.4rem; margin-bottom: 18px; }
+
+      .row, .row-3 { grid-template-columns: 1fr; }
+
+      body { padding-bottom: 62px; }
+
+      .mobile-tabbar-wrap {
+        position: fixed;
+        left: 0; right: 0; bottom: 0;
+        z-index: 20;
+      }
+      .mobile-tabbar {
+        display: flex;
+        background: var(--surface);
+        border-top: 2px solid var(--line);
+      }
+      .mobile-tabbar a {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 2px;
+        padding: 9px 2px 10px;
+        font-family: var(--font-display);
+        font-weight: 600;
+        font-size: 0.66rem;
+        color: var(--muted);
+        text-decoration: none;
+        border-top: 2px solid transparent;
+      }
+      .mobile-tabbar a.active { color: var(--accent); border-top-color: var(--accent); }
+      .mobile-tabbar .tab-icon { font-size: 1.1rem; line-height: 1; }
+
+      .account-sheet {
+        display: none;
+        position: absolute;
+        left: 12px; right: 12px; bottom: 100%;
+        margin-bottom: 10px;
+        background: var(--surface);
+        border: 2px solid var(--line);
+        border-radius: 12px;
+        box-shadow: var(--shadow);
+        padding: 14px;
+      }
+      .account-sheet.open { display: block; }
+      .account-sheet .who {
+        font-family: var(--font-mono);
+        font-size: 0.75rem;
+        color: var(--muted);
+        text-align: center;
+        margin-bottom: 10px;
+      }
+      .account-sheet a { display: block; text-align: center; margin-bottom: 8px; }
+      .account-sheet a:last-child { margin-bottom: 0; }
+    }
+    @media (min-width: 721px) { .mobile-tabbar-wrap { display: none; } }
   </style>
 </head>
 <body>
@@ -293,6 +364,22 @@
 <main>
   {% block content %}{% endblock %}
 </main>
+
+<div class="mobile-tabbar-wrap">
+  <div class="account-sheet" id="accountSheet">
+    <div class="who">{{ current_user.name }}</div>
+    {% if feedback_email %}<a href="mailto:{{ feedback_email }}?subject=POP%20Closet%20feedback" class="btn btn-ghost btn-sm">Feedback</a>{% endif %}
+    <a href="/logout" class="btn btn-ghost btn-sm">Log out</a>
+  </div>
+  <div class="mobile-tabbar">
+    <a href="/" {% if request.path == '/' %}class="active"{% endif %}><span class="tab-icon">👕</span>Closet</a>
+    <a href="/outfits" {% if request.path.startswith('/outfits') %}class="active"{% endif %}><span class="tab-icon">🗂️</span>Outfits</a>
+    <a href="/calendar" {% if request.path.startswith('/calendar') %}class="active"{% endif %}><span class="tab-icon">📅</span>Calendar</a>
+    <a href="/ask" {% if request.path.startswith('/ask') %}class="active"{% endif %}><span class="tab-icon">💬</span>Ask</a>
+    <a href="/shop" {% if request.path.startswith('/shop') %}class="active"{% endif %}><span class="tab-icon">🛍️</span>Shop</a>
+    <a href="#" onclick="document.getElementById('accountSheet').classList.toggle('open'); return false;"><span class="tab-icon">⚙️</span>Account</a>
+  </div>
+</div>
 
 <script>
   if ('serviceWorker' in navigator) {
