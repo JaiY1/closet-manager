@@ -119,7 +119,6 @@ For EACH item, return:
 - fit: the fit, or empty string if unclear
 - occasion: the occasion it suits, or empty string if unclear
 - notes: notable details (pattern, texture, distinctive features)
-- bbox: the item's bounding box in the photo as [left, top, right, bottom], each a fraction from 0.0 to 1.0 (0,0 is top-left). Make the box generous enough to include the whole visible garment.
 
 Only list clothing/footwear/accessories actually worn. Ignore the background, furniture, and body parts."""
 
@@ -142,13 +141,9 @@ _DETECT_SCHEMA = {
                     "brand": {"type": "string"},
                     "fit": {"type": "string", "enum": ["slim", "regular", "relaxed", "oversized", ""]},
                     "occasion": {"type": "string", "enum": ["casual", "smart-casual", "formal", "athletic", ""]},
-                    "notes": {"type": "string"},
-                    "bbox": {
-                        "type": "array",
-                        "items": {"type": "number"}
-                    }
+                    "notes": {"type": "string"}
                 },
-                "required": ["name", "type", "color", "brand", "fit", "occasion", "notes", "bbox"],
+                "required": ["name", "type", "color", "brand", "fit", "occasion", "notes"],
                 "additionalProperties": False
             }
         }
@@ -160,7 +155,10 @@ _DETECT_SCHEMA = {
 
 def detect_garments_in_photo(image_bytes: bytes) -> list:
     """From an outfit photo, return one dict per worn garment with autotag fields
-    plus a normalized [left, top, right, bottom] bbox used to crop each item."""
+    (name/type/color/brand/fit/occasion/notes). No bounding box — Claude's spatial
+    localization isn't reliable enough to crop by; the full photo plus this
+    description is instead handed straight to Gemini, which isolates the named
+    garment itself (see imagegen.generate_garment_cutout)."""
     jpeg_bytes = _resize_to_jpeg(image_bytes, max_size=1024)
     b64 = base64.standard_b64encode(jpeg_bytes).decode("utf-8")
 

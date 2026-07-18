@@ -138,28 +138,6 @@ def _delete_upload(rel_path):
         p.unlink()
 
 
-def _crop_bbox(image_bytes, bbox, pad=0.12):
-    """Crop a garment out of a full photo using a normalized [l,t,r,b] bbox,
-    padded ~12% so the reconstruction has full context. Bad boxes fall back to
-    the whole image rather than crashing."""
-    img = Image.open(BytesIO(image_bytes)).convert("RGB")
-    w, h = img.size
-    try:
-        l, t, r, b = [float(v) for v in bbox]
-    except (TypeError, ValueError):
-        l, t, r, b = 0.0, 0.0, 1.0, 1.0
-    l, r = sorted((max(0.0, min(1.0, l)), max(0.0, min(1.0, r))))
-    t, b = sorted((max(0.0, min(1.0, t)), max(0.0, min(1.0, b))))
-    bw, bh = r - l, b - t
-    l, r = max(0.0, l - bw * pad), min(1.0, r + bw * pad)
-    t, b = max(0.0, t - bh * pad), min(1.0, b + bh * pad)
-    box = (int(l * w), int(t * h), int(r * w), int(b * h))
-    crop = img if (box[2] - box[0] < 4 or box[3] - box[1] < 4) else img.crop(box)
-    out = BytesIO()
-    crop.save(out, format="JPEG", quality=92)
-    return out.getvalue()
-
-
 def _cap_blocked(uid):
     """Return a user-facing message if a new image generation would exceed a cost
     cap, else None. Checked before every real (non-cached) Gemini image call."""
@@ -531,21 +509,22 @@ def add_photo_analyze():
     items = []
     for g in detected:
         try:
-            crop = _crop_bbox(photo_bytes, g.get('bbox'))
-            g.pop('bbox', None)
-            # Always carry the crop so the review grid can preview/regenerate a cutout.
-            g['crop_b64'] = base64.b64encode(crop).decode('ascii')
+            # Claude's bounding boxes were unreliable for this composition (mirror
+            # selfies, off-center subjects) — pre-cropping to them cut out the
+            # wrong region entirely. Send Gemini the full photo instead and let it
+            # locate + isolate the named garment itself, which it does well.
+            g['crop_b64'] = base64.b64encode(photo_bytes).decode('ascii')
             if not OPTIN_CUTOUTS:
                 # Eager path: reconstruct every item up front.
                 desc = ", ".join(x for x in [g.get('color'), g.get('name'), g.get('notes')] if x)
-                will_bill = not cutout_cached(crop, desc)
+                will_bill = not cutout_cached(photo_bytes, desc)
                 if will_bill:
                     blocked = _cap_blocked(uid)
                     if blocked:
                         g['error'] = blocked
                         items.append(g)
                         continue
-                png = reconstruct_garment(crop, desc)
+                png = reconstruct_garment(photo_bytes, desc)
                 if will_bill:
                     record_image_event(uid, 'cutout')
                 g['cutout_b64'] = base64.b64encode(png).decode('ascii')
@@ -553,7 +532,6 @@ def add_photo_analyze():
         except Exception as e:
             # One garment failing shouldn't sink the whole batch.
             g['error'] = _friendly_gemini_error(e)
-            g.pop('bbox', None)
             items.append(g)
 
     return jsonify({"garments": items, "optin": OPTIN_CUTOUTS})

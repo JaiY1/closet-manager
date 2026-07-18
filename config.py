@@ -33,7 +33,10 @@ CUTOUT_RETRY       = _flag("CUTOUT_RETRY", True)         # D: auto-retry hazy/fa
 BODY_PHOTO_GATE    = _flag("BODY_PHOTO_GATE", True)      # A: validate the body photo on upload
 
 # Cost
-OPTIN_CUTOUTS      = _flag("OPTIN_CUTOUTS", True)        # F: reconstruct only kept items, on confirm
+OPTIN_CUTOUTS      = _flag("OPTIN_CUTOUTS", False)       # F: reconstruct only kept items, on confirm (off by
+                                                          # default — see imagegen.py: reconstruction now runs
+                                                          # against the full photo, not a bbox crop, so there's
+                                                          # no cheap free preview to show without generating)
 CACHE_CUTOUTS      = _flag("CACHE_CUTOUTS", True)        # H: cache cutouts by image hash
 PERSIST_TRYON      = _flag("PERSIST_TRYON", True)        # E: disk-persist try-on renders
 REMBG_HYBRID       = _flag("REMBG_HYBRID", True)         # G: free rembg bg-removal for flat photos

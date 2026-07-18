@@ -83,9 +83,11 @@ def _extract_image(response) -> bytes:
 
 # --- Garment cutout ---------------------------------------------------------
 
-_RECONSTRUCT_PROMPT = """Isolate ONLY this single garment: {description}.
+_RECONSTRUCT_PROMPT = """The reference photo shows a person wearing a full outfit — multiple garments at once. Find and isolate ONLY this one item among everything they have on: {description}.
 
-Reconstruct it as a complete flat product-catalog image:
+Treat every other garment or accessory they're wearing (and their body, face, hair) as unwanted background to remove, exactly like you would remove a room background — the same way you'd exclude anything else that isn't the target item.
+
+Reconstruct the isolated garment as a complete flat product-catalog image:
 - Remove the wearer, body, skin, hair, hands, every other clothing layer, and the entire scene/background.
 - Show the whole garment alone, front-facing and neatly presented (ghost-mannequin style). Infer parts hidden in the reference ONLY from what the visible fabric and construction clearly imply.
 - Preserve exactly the color, material, texture, silhouette, pattern, fastenings, and any logos or lettering that are visible in the reference.
@@ -93,9 +95,11 @@ Reconstruct it as a complete flat product-catalog image:
 - Place the garment centered on a completely uniform solid pure-green background (#00ff00) that fills the frame to every edge. No shadow on the background."""
 
 # D: fidelity-focused variant — leans harder on exact color/logo/text preservation.
-_RECONSTRUCT_PROMPT_V2 = """Isolate ONLY this single garment: {description}.
+_RECONSTRUCT_PROMPT_V2 = """The reference photo shows a person wearing a full outfit — multiple garments at once. Find and isolate ONLY this one item among everything they have on: {description}.
 
-Reconstruct it as a complete, high-fidelity flat product-catalog image:
+Treat every other garment or accessory they're wearing (and their body, face, hair) as unwanted background to remove, exactly like you would remove a room background — the same way you'd exclude anything else that isn't the target item.
+
+Reconstruct the isolated garment as a complete, high-fidelity flat product-catalog image:
 - Remove the wearer, body, skin, hair, hands, every other clothing layer, and the entire scene/background.
 - Show the whole garment alone, front-facing and neatly presented (ghost-mannequin style). Infer parts hidden in the reference ONLY from what the visible fabric and construction clearly imply.
 - Reproduce the EXACT colour(s) and shade — do not lighten, darken, or shift the hue. Match the fabric texture, weave, sheen, and drape precisely.
@@ -112,12 +116,16 @@ _TRANSPARENT_T = 28.0
 _OPAQUE_T = 72.0
 
 
-def generate_garment_cutout(crop_bytes: bytes, description: str) -> bytes:
+def generate_garment_cutout(photo_bytes: bytes, description: str) -> bytes:
     """Gemini render of the garment alone on a green screen (not yet keyed).
+    photo_bytes is expected to be the full source photo (not a pre-cropped
+    region) — Gemini locates and isolates the named garment itself, which is
+    far more reliable than pre-cropping to a vision-model-estimated bounding
+    box (those are unreliable for this kind of spatial localization).
     D: fidelity mode sends a higher-res reference and a stricter prompt."""
     ref_px = 1280 if CUTOUT_FIDELITY else 1024
     prompt = _RECONSTRUCT_PROMPT_V2 if CUTOUT_FIDELITY else _RECONSTRUCT_PROMPT
-    ref = _resize_to_jpeg(crop_bytes, max_size=ref_px)
+    ref = _resize_to_jpeg(photo_bytes, max_size=ref_px)
     response = _get_client().models.generate_content(
         model=GEMINI_IMAGE_MODEL,
         contents=[
@@ -190,38 +198,39 @@ def _cutout_ok(png_bytes: bytes) -> bool:
     return transp_frac >= 0.10 and clear_corners >= 3
 
 
-def _reconstruct_once(crop_bytes: bytes, description: str) -> bytes:
-    raw = generate_garment_cutout(crop_bytes, description)
+def _reconstruct_once(photo_bytes: bytes, description: str) -> bytes:
+    raw = generate_garment_cutout(photo_bytes, description)
     return chroma_key_to_png(
         raw, key_rgb=None,
         transparent_threshold=_TRANSPARENT_T, opaque_threshold=_OPAQUE_T,
     )
 
 
-def _cutout_key(crop_bytes: bytes, description: str) -> str:
+def _cutout_key(photo_bytes: bytes, description: str) -> str:
     cfg_tag = f"f{int(CUTOUT_FIDELITY)}".encode()
-    return hashlib.sha256(crop_bytes + b"|" + (description or "").encode() + b"|" + cfg_tag).hexdigest()
+    return hashlib.sha256(photo_bytes + b"|" + (description or "").encode() + b"|" + cfg_tag).hexdigest()
 
 
-def cutout_cached(crop_bytes: bytes, description: str) -> bool:
+def cutout_cached(photo_bytes: bytes, description: str) -> bool:
     """True if reconstruct_garment would return a cached cutout (no API call).
     Lets callers avoid counting cache hits against cost caps."""
-    return _cache_get(_cutout_key(crop_bytes, description)) is not None
+    return _cache_get(_cutout_key(photo_bytes, description)) is not None
 
 
-def reconstruct_garment(crop_bytes: bytes, description: str, force: bool = False) -> bytes:
-    """Cropped worn garment -> clean transparent-PNG catalog cutout.
+def reconstruct_garment(photo_bytes: bytes, description: str, force: bool = False) -> bytes:
+    """Full outfit photo -> clean transparent-PNG catalog cutout of one named
+    garment (Gemini finds and isolates it — see generate_garment_cutout).
     H: result is cached by input hash. D: retries once if the first cutout is bad.
     force=True skips the cache read (used by "regenerate" to re-roll a fresh cutout)."""
-    key = _cutout_key(crop_bytes, description)
+    key = _cutout_key(photo_bytes, description)
     if not force:
         cached = _cache_get(key)
         if cached is not None:
             return cached
 
-    png = _reconstruct_once(crop_bytes, description)
+    png = _reconstruct_once(photo_bytes, description)
     if CUTOUT_RETRY and not _cutout_ok(png):
-        retry = _reconstruct_once(crop_bytes, description)
+        retry = _reconstruct_once(photo_bytes, description)
         if _cutout_ok(retry):
             png = retry
 
