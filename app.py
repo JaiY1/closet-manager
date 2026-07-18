@@ -216,12 +216,19 @@ def logout():
 # it there'd be no gate at all.
 
 _ADMIN_IMPORT_MAX_BYTES = 512 * 1024 * 1024  # generous for a full data export
+# A photo of a full outfit can detect many garments, each carrying its own
+# reconstructed cutout PNG in the confirm payload — the normal 12MB single-image
+# cap is too tight for that batch, even after trimming redundant data (see
+# confirmAdd() in add_photo.html).
+_PHOTO_CONFIRM_MAX_BYTES = 40 * 1024 * 1024
 
 
 @app.before_request
-def _admin_import_upload_limit():
+def _upload_limit_overrides():
     if request.endpoint == 'admin_import_data':
         request.max_content_length = _ADMIN_IMPORT_MAX_BYTES
+    elif request.endpoint == 'add_photo_confirm':
+        request.max_content_length = _PHOTO_CONFIRM_MAX_BYTES
 
 
 @app.route("/admin/import-data", methods=["POST"])
