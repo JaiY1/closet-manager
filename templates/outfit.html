@@ -147,6 +147,22 @@
   }
 
   .star-display { color: var(--accent); font-size: 0.95rem; letter-spacing: 1px; }
+
+  /* Try-on (mirrors the Ask/Suggest page) */
+  .tryon-wrap { display: none; margin-top: 14px; }
+  .tryon-photo-setting { margin-top: 18px; padding-top: 14px; border-top: 1.5px solid var(--hair); }
+  .tps-label { font-family: var(--font-mono); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 8px; }
+  .body-photo-row { margin-bottom: 0; }
+  .body-upload-zone { border: 2px dashed var(--line); border-radius: 10px; padding: 14px; text-align: center; cursor: pointer; background: var(--surface); transition: border-color 0.15s, background 0.15s; }
+  .body-upload-zone:hover { border-color: var(--accent); background: var(--accent-soft); }
+  .body-upload-zone .t { font-family: var(--font-display); font-weight: 700; font-size: 0.85rem; }
+  .body-upload-zone .s { font-size: 0.72rem; color: var(--muted); margin-top: 3px; }
+  .body-thumb-row { display: flex; align-items: center; gap: 10px; font-size: 0.78rem; color: var(--muted); }
+  .body-thumb-row img { width: 40px; height: 52px; object-fit: cover; border: 2px solid var(--line); border-radius: 6px; }
+  .body-warning { margin-top: 8px; font-size: 0.75rem; line-height: 1.45; color: var(--accent-hover); background: var(--accent-soft); border: 1.5px solid var(--accent); border-radius: 8px; padding: 7px 10px; }
+  .tryon-result { margin-top: 12px; }
+  .tryon-result img { width: 100%; border: 2px solid var(--line); border-radius: 12px; display: block; }
+  .tryon-hint { font-size: 0.76rem; color: var(--muted); margin-top: 8px; line-height: 1.5; }
 </style>
 
 <h1>Outfits</h1>
@@ -221,6 +237,19 @@
       <button class="btn btn-primary" style="width:100%;margin-top:4px" onclick="saveOutfit()">Save Outfit</button>
       <div class="status" id="saveStatus"></div>
 
+      <!-- See it on you — renders the currently selected garments on your body photo -->
+      <div class="tryon-photo-setting">
+        <div class="tps-label">Your try-on photo</div>
+        <div class="body-photo-row" id="bodyPhotoRow"></div>
+      </div>
+      <input type="file" id="bodyInput" accept="image/*" style="display:none" onchange="uploadBody(this)">
+      <div class="tryon-wrap" id="tryonWrap">
+        <button class="btn btn-ghost" style="width:100%" id="tryonBtn" onclick="doTryon()">👤 See it on you</button>
+        <div class="status" id="tryonStatus"></div>
+        <div class="tryon-result" id="tryonResult"></div>
+        <div class="tryon-hint" id="tryonHint"></div>
+      </div>
+
       {% else %}
       <p style="color:var(--muted)">Add garments to your closet first.</p>
       <a href="/add" class="btn btn-primary" style="margin-top:16px">Add Garment</a>
@@ -278,17 +307,29 @@
     const preview = document.getElementById('selectionPreview');
     if (selectedIds.size === 0) {
       preview.innerHTML = '<span style="color:var(--muted);font-size:0.85rem">None selected</span>';
-      return;
+    } else {
+      let html = '';
+      selectedIds.forEach(id => {
+        const row = document.querySelector(`.garment-row[data-id="${id}"]`);
+        if (row) {
+          html += `<span class="sel-chip">${row.dataset.name}
+            <button onclick="deselect(${id})">✕</button></span>`;
+        }
+      });
+      preview.innerHTML = html;
     }
-    let html = '';
-    selectedIds.forEach(id => {
-      const row = document.querySelector(`.garment-row[data-id="${id}"]`);
-      if (row) {
-        html += `<span class="sel-chip">${row.dataset.name}
-          <button onclick="deselect(${id})">✕</button></span>`;
-      }
-    });
-    preview.innerHTML = html;
+    syncTryon();
+  }
+
+  // Show the try-on control once something is selected; a changed selection
+  // invalidates any previously rendered try-on, so clear it.
+  function syncTryon() {
+    const wrap = document.getElementById('tryonWrap');
+    if (!wrap) return;
+    wrap.style.display = selectedIds.size ? 'block' : 'none';
+    document.getElementById('tryonResult').innerHTML = '';
+    document.getElementById('tryonStatus').textContent = '';
+    document.getElementById('tryonHint').textContent = '';
   }
 
   function deselect(id) {
@@ -339,6 +380,113 @@
     } else {
       document.getElementById('saveStatus').textContent = 'Failed to save.';
     }
+  }
+
+  // --- Virtual try-on (shared /suggest/tryon backend, same as Ask/Suggest) ---
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  let hasBodyPhoto = false, bodyPhotoUrl = null, bodyWarning = '';
+
+  window.addEventListener('DOMContentLoaded', loadBodyState);
+
+  async function loadBodyState() {
+    try {
+      const data = await (await fetch('/settings/body-photo')).json();
+      hasBodyPhoto = !!data.path;
+      bodyPhotoUrl = data.url || null;
+    } catch { hasBodyPhoto = false; bodyPhotoUrl = null; }
+    renderBodyRow();
+  }
+
+  // Body-photo control is always visible so there's no surprise file dialog.
+  function renderBodyRow() {
+    const row = document.getElementById('bodyPhotoRow');
+    if (!row) return;
+    if (hasBodyPhoto) {
+      row.innerHTML = `
+        <div class="body-thumb-row">
+          ${bodyPhotoUrl ? `<img src="${esc(bodyPhotoUrl)}" alt="Your photo">` : ''}
+          <span>Your try-on photo is set. <a href="#" onclick="changeBodyPhoto(event)">Change</a></span>
+        </div>
+        ${bodyWarning ? `<div class="body-warning">⚠️ ${esc(bodyWarning)}</div>` : ''}`;
+    } else {
+      row.innerHTML = `
+        <div class="body-upload-zone" onclick="changeBodyPhoto(event)">
+          <div class="t">🧍 Add a photo of yourself</div>
+          <div class="s">Needed once for try-on · front-facing, full-body works best</div>
+        </div>`;
+    }
+  }
+
+  function doTryon() {
+    if (!selectedIds.size) {
+      document.getElementById('tryonStatus').textContent = 'Select garments first.';
+      return;
+    }
+    if (!hasBodyPhoto) {
+      document.getElementById('tryonStatus').textContent = '☝️ Add a photo of yourself first.';
+      return;
+    }
+    runTryon();
+  }
+
+  async function uploadBody(input) {
+    const file = input.files[0];
+    if (!file) return;
+    const status = document.getElementById('tryonStatus');
+    status.textContent = 'Saving your photo…';
+    const fd = new FormData();
+    fd.append('image', file);
+    try {
+      const data = await (await fetch('/settings/body-photo', { method: 'POST', body: fd })).json();
+      if (data.error) { status.textContent = '⚠️ ' + data.error; return; }
+      hasBodyPhoto = true;
+      bodyPhotoUrl = data.url || null;
+      bodyWarning = data.warning || '';
+      renderBodyRow();
+      status.textContent = '';
+      if (selectedIds.size) runTryon();   // auto-continue now that the photo is set
+    } catch {
+      status.textContent = '⚠️ Could not save your photo.';
+    }
+  }
+
+  async function runTryon() {
+    const btn = document.getElementById('tryonBtn');
+    const status = document.getElementById('tryonStatus');
+    const out = document.getElementById('tryonResult');
+    const ids = [...selectedIds];
+    if (!ids.length) return;
+    btn.disabled = true;
+    status.textContent = 'Rendering you in this outfit — about 10–15 seconds…';
+    out.innerHTML = '';
+    try {
+      const res = await fetch('/suggest/tryon', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ garment_ids: ids })
+      });
+      const data = await res.json();
+      if (data.error === 'no_body_photo') {
+        hasBodyPhoto = false; bodyPhotoUrl = null; renderBodyRow();
+        status.textContent = '☝️ Add a photo of yourself first.';
+      } else if (data.error) {
+        status.textContent = '⚠️ ' + data.error;
+      } else {
+        out.innerHTML = `<img src="${esc(data.url)}" alt="You in this outfit">`;
+        status.textContent = '';
+        document.getElementById('tryonHint').textContent =
+          'AI-generated preview — proportions and likeness are approximate.';
+      }
+    } catch {
+      status.textContent = '⚠️ Try-on failed. Try again.';
+    }
+    btn.disabled = false;
+  }
+
+  function changeBodyPhoto(e) {
+    if (e) e.preventDefault();
+    document.getElementById('bodyInput').click();
   }
 </script>
 {% endblock %}
