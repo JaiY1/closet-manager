@@ -166,7 +166,11 @@ def _friendly_gemini_error(e) -> str:
 
 @app.before_request
 def require_login():
-    if request.endpoint in ('login_page', 'do_login', 'static', 'service_worker', 'serve_upload', 'healthz', 'admin_import_data') or request.endpoint is None:
+    # NOTE: serve_upload (user images — body photos, try-on renders, cutouts) is
+    # deliberately NOT exempt: browsers send the session cookie with <img>
+    # requests, so logged-in pages keep working, while a leaked/shared image URL
+    # no longer works without a session.
+    if request.endpoint in ('login_page', 'do_login', 'static', 'service_worker', 'healthz', 'admin_import_data') or request.endpoint is None:
         return
     if 'user_id' not in session:
         return redirect(url_for('login_page'))
@@ -710,6 +714,8 @@ def detect_calendar_outfit():
 def log_today():
     uid = session['user_id']
     data = request.json or {}
+    if not data.get('date'):
+        return jsonify({"error": "No date provided"}), 400
     log_outfit(
         user_id=uid,
         date=data.get('date'),

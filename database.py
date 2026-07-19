@@ -391,8 +391,38 @@ def _decrement_worn(garment_id: int):
 
 # --- Outfits ---
 
+def _owned_garment_ids(conn, user_id: int, garment_ids) -> list:
+    """Filter caller-supplied garment ids down to ones this user actually owns.
+    Garment ids are small sequential integers, so trusting them as-is would let
+    one account attach (and read back / bump worn_count on) another account's
+    garments."""
+    ids = []
+    for g in garment_ids or []:
+        try:
+            ids.append(int(g))
+        except (TypeError, ValueError):
+            continue
+    if not ids:
+        return []
+    placeholders = ','.join('?' * len(ids))
+    rows = conn.execute(
+        f"SELECT id FROM garments WHERE id IN ({placeholders}) AND user_id = ?",
+        [*ids, user_id]
+    ).fetchall()
+    owned = {r['id'] for r in rows}
+    # Dedupe (preserving order) — a repeated id would double-bump worn_count
+    seen = set()
+    out = []
+    for g in ids:
+        if g in owned and g not in seen:
+            seen.add(g)
+            out.append(g)
+    return out
+
+
 def add_outfit(user_id, name, occasion, rating, notes, garment_ids) -> int:
     conn = get_db()
+    garment_ids = _owned_garment_ids(conn, user_id, garment_ids)
     cur = conn.execute(
         "INSERT INTO outfits (user_id, name, occasion, rating, notes) VALUES (?, ?, ?, ?, ?)",
         (user_id, name, occasion or '', rating or 0, notes or '')
@@ -448,6 +478,13 @@ def get_outfit(outfit_id: int, user_id: int) -> Optional[dict]:
 
 def log_outfit(user_id: int, date: str, outfit_id, garment_ids: list, notes: str):
     conn = get_db()
+    garment_ids = _owned_garment_ids(conn, user_id, garment_ids)
+    if outfit_id is not None:
+        owned = conn.execute(
+            "SELECT 1 FROM outfits WHERE id = ? AND user_id = ?", (outfit_id, user_id)
+        ).fetchone()
+        if not owned:
+            outfit_id = None
     prev = conn.execute(
         "SELECT garment_ids FROM outfit_logs WHERE user_id = ? AND date = ?", (user_id, date)
     ).fetchone()
