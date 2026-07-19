@@ -238,6 +238,91 @@ def reconstruct_garment(photo_bytes: bytes, description: str, force: bool = Fals
     return png
 
 
+# --- Catalog normalization (one-off batch) ----------------------------------
+# Separate from the worn-outfit import path above. reconstruct_garment assumes the
+# reference is a person wearing a full outfit; these catalog items are single-item
+# photos (flat-lays, hanger shots, folded, occasionally worn), so they get their
+# own prompt plus consistent per-category framing on a fixed square canvas.
+
+_FRAMING_TOPS = {"shirt", "t-shirt", "polo", "hoodie", "sweater", "jacket",
+                 "coat", "suit", "blazer", "dress"}
+_FRAMING_BOTTOMS = {"trousers", "jeans", "shorts", "chinos", "skirt"}
+_FRAMING_FOOT = {"shoes", "sneakers", "boots", "loafers"}
+
+
+def _framing_for(category: str) -> str:
+    c = (category or "").lower()
+    if c in _FRAMING_TOPS:
+        return ("Present it as an upper-body garment in a straight, symmetrical front view: "
+                "collar or neckline at the top, both sleeves (if any) spread evenly and fully "
+                "visible, the front panel flat and centered, and the complete hem visible at the bottom.")
+    if c in _FRAMING_BOTTOMS:
+        return ("Present it as a lower-body garment in a straight front view oriented vertically "
+                "(portrait): waistband at the top, both legs (or the full skirt) straight and fully "
+                "visible down to the complete hem at the bottom.")
+    if c in _FRAMING_FOOT:
+        return ("Present the matching PAIR side by side in a consistent elevated three-quarter front "
+                "view, both facing the same direction, with toes and soles visible.")
+    return ("Present the whole item centered and flat in a straightforward front view, with its full "
+            "extent visible.")
+
+
+_NORMALIZE_PROMPT = """The reference image shows a single clothing item: {description}. It may be laid flat, folded, on a hanger, or worn — ignore how it is presented and ignore any person, hanger, floor, wall, or scene around it.
+
+Recreate this exact item as one clean, flat product-catalog image:
+- {framing}
+- Remove EVERYTHING that is not the item itself: any person, body, skin, hands, hanger, floor, furniture, wall, props, and the entire background.
+- Reproduce the EXACT colour(s) and shade, the fabric texture and drape, the silhouette, seams, stitching, pockets, fastenings, and hardware visible in the reference. Reproduce every visible logo, graphic, text, print, stripe, and trim EXACTLY as positioned and styled — same wording, same placement, same proportions.
+- Infer parts hidden in the reference ONLY from what the visible fabric and construction clearly imply. Do NOT invent, add, remove, or restyle any logo, text, pocket, seam, fastener, hardware, colour, or decoration the reference does not clearly show.
+- Center the item within a SQUARE frame with generous, even margins on all sides, so every item sits at a consistent scale fully inside the frame with nothing cropped at the edges. Even, neutral studio lighting; no cast shadow.
+- Place it on a completely uniform solid pure-green background (#00ff00) filling the frame to every edge. No shadow, gradient, or texture on the background."""
+
+
+def _generate_normalized(image_bytes: bytes, description: str, framing: str) -> bytes:
+    ref = _resize_to_jpeg(image_bytes, max_size=1280)
+    response = _get_client().models.generate_content(
+        model=GEMINI_IMAGE_MODEL,
+        contents=[
+            types.Part.from_bytes(data=ref, mime_type="image/jpeg"),
+            _NORMALIZE_PROMPT.format(description=description or "the clothing item", framing=framing),
+        ],
+    )
+    return _extract_image(response)
+
+
+def _normalize_once(image_bytes: bytes, description: str, category: str) -> bytes:
+    raw = _generate_normalized(image_bytes, description, _framing_for(category))
+    return chroma_key_to_png(
+        raw, key_rgb=None,
+        transparent_threshold=_TRANSPARENT_T, opaque_threshold=_OPAQUE_T,
+    )
+
+
+def _normalize_key(image_bytes: bytes, description: str, category: str) -> str:
+    tag = ("normalize|" + (category or "")).encode()
+    return hashlib.sha256(image_bytes + b"|" + (description or "").encode() + b"|" + tag).hexdigest()
+
+
+def normalize_garment_image(image_bytes: bytes, description: str, category: str = "",
+                            force: bool = False) -> bytes:
+    """One-off catalog normalization: turn any single-item garment photo (flat,
+    hung, folded, or worn) into a consistent transparent-PNG catalog cutout with
+    category-consistent framing on a square canvas. Cached in its own namespace so
+    it never collides with the worn-outfit import cutouts."""
+    key = _normalize_key(image_bytes, description, category)
+    if not force:
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+    png = _normalize_once(image_bytes, description, category)
+    if CUTOUT_RETRY and not _cutout_ok(png):
+        retry = _normalize_once(image_bytes, description, category)
+        if _cutout_ok(retry):
+            png = retry
+    _cache_put(key, png)
+    return png
+
+
 # --- Virtual try-on ---------------------------------------------------------
 
 _TRYON_PROMPT = """Generate one photorealistic image of the SAME person shown in the first image.
