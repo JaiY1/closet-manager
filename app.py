@@ -497,20 +497,22 @@ def add_photo_page():
     return render_template("add_photo.html")
 
 
-# Detection + reconstruction runs in a background thread, decoupled from the
-# request that kicked it off — a multi-item photo can take up to ~1 min of
-# sequential Gemini calls, and a mobile browser backgrounding/suspending the tab
-# mid-request was killing the whole import. The client polls for the result
-# instead of holding one long-lived connection open.
-_PHOTO_JOB_TTL = 3600  # prune finished jobs after an hour
+# Background-job helpers, shared by any long-running Gemini call (photo-import
+# reconstruction, virtual try-on, ...) that we don't want tied to one open
+# request — a mobile browser backgrounding/suspending the tab was killing
+# those mid-flight. Each call site keeps its own jobs dict (results shape
+# differs) but shares the same TTL-pruning logic.
+_JOB_TTL = 3600  # prune finished jobs after an hour
+
+
+def _prune_jobs(jobs: dict):
+    cutoff = time.time() - _JOB_TTL
+    for jid in [j for j, v in jobs.items() if v.get('created_at', 0) < cutoff]:
+        jobs.pop(jid, None)
+
+
 _photo_jobs = {}
 _photo_jobs_lock = threading.Lock()
-
-
-def _prune_photo_jobs():
-    cutoff = time.time() - _PHOTO_JOB_TTL
-    for jid in [j for j, v in _photo_jobs.items() if v.get('created_at', 0) < cutoff]:
-        _photo_jobs.pop(jid, None)
 
 
 def _run_photo_analyze_job(job_id, uid, photo_bytes):
@@ -571,7 +573,7 @@ def add_photo_analyze():
     photo_bytes = request.files['image'].read()
     job_id = uuid.uuid4().hex
     with _photo_jobs_lock:
-        _prune_photo_jobs()
+        _prune_jobs(_photo_jobs)
         _photo_jobs[job_id] = {"status": "running", "user_id": uid, "created_at": time.time()}
     threading.Thread(target=_run_photo_analyze_job, args=(job_id, uid, photo_bytes), daemon=True).start()
     return jsonify({"job_id": job_id})
@@ -878,8 +880,35 @@ def remove_bg_route():
     return jsonify({"image_b64": base64.b64encode(png).decode('ascii')})
 
 
+_tryon_jobs = {}
+_tryon_jobs_lock = threading.Lock()
+
+
+def _run_tryon_job(job_id, uid, body_bytes, pngs, names, key, garment_ids):
+    try:
+        result = tryon(body_bytes, pngs, ", ".join(names))
+    except Exception as e:
+        with _tryon_jobs_lock:
+            _tryon_jobs[job_id].update(status="error", error=_friendly_gemini_error(e))
+        return
+
+    fname = _unique_name("tryon_", ".png")
+    (UPLOAD_DIR / fname).write_bytes(result)
+    rel = f"uploads/{fname}"
+    _tryon_cache[key] = rel
+    _save_tryon_cache()
+    record_image_event(uid, 'tryon')
+    add_tryon_history(uid, rel, garment_ids)
+    with _tryon_jobs_lock:
+        _tryon_jobs[job_id].update(status="done", url=f"/static/{rel}")
+
+
 @app.route("/suggest/tryon", methods=["POST"])
 def suggest_tryon():
+    """Kick off a try-on render as a background job (same rationale as photo-import
+    analyze, above) — a render takes ~10-15s of Gemini time, which is enough for a
+    backgrounded mobile tab to drop the connection. A cache hit still resolves
+    immediately with no job at all."""
     uid = session['user_id']
     if not GEMINI_API_KEY:
         return jsonify({"error": "GEMINI_API_KEY not set in .env"}), 503
@@ -918,19 +947,26 @@ def suggest_tryon():
     if blocked:
         return jsonify({"error": blocked, "cap": True}), 429
 
-    try:
-        result = tryon(body_bytes, pngs, ", ".join(names))
-    except Exception as e:
-        return jsonify({"error": _friendly_gemini_error(e)}), 502
+    job_id = uuid.uuid4().hex
+    with _tryon_jobs_lock:
+        _prune_jobs(_tryon_jobs)
+        _tryon_jobs[job_id] = {"status": "running", "user_id": uid, "created_at": time.time()}
+    threading.Thread(target=_run_tryon_job, args=(job_id, uid, body_bytes, pngs, names, key, garment_ids),
+                     daemon=True).start()
+    return jsonify({"job_id": job_id})
 
-    fname = _unique_name("tryon_", ".png")
-    (UPLOAD_DIR / fname).write_bytes(result)
-    rel = f"uploads/{fname}"
-    _tryon_cache[key] = rel
-    _save_tryon_cache()
-    record_image_event(uid, 'tryon')
-    add_tryon_history(uid, rel, garment_ids)
-    return jsonify({"url": f"/static/{rel}", "cached": False})
+
+@app.route("/suggest/tryon/<job_id>/status")
+def suggest_tryon_status(job_id):
+    job = _tryon_jobs.get(job_id)
+    # 404 (not 403) for a foreign job_id too — don't confirm it exists at all.
+    if not job or job['user_id'] != session['user_id']:
+        return jsonify({"error": "Job not found"}), 404
+    if job['status'] == 'error':
+        return jsonify({"status": "error", "error": job.get('error', 'Something went wrong.')})
+    if job['status'] == 'done':
+        return jsonify({"status": "done", "url": job.get('url')})
+    return jsonify({"status": "running"})
 
 
 @app.route("/tryon/history")

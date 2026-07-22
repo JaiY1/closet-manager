@@ -177,3 +177,76 @@ def test_photo_analyze_status_rejects_foreign_job(app_module, logged_in):
         app_module._photo_jobs[job_id] = {"status": "done", "user_id": other_uid, "created_at": 0, "garments": []}
     r = c.get(f"/add/photo/analyze/{job_id}/status")
     assert r.status_code == 404
+
+
+# --- Background try-on jobs (same rationale as photo-analyze, above) ---
+
+def _make_test_image(app_module, name):
+    from PIL import Image
+    path = app_module.UPLOAD_DIR / name
+    Image.new('RGB', (10, 10), color='red').save(path)
+    return f"uploads/{name}"
+
+
+def _setup_tryon_garment(app_module, uid, suffix):
+    from database import add_garment, set_body_photo
+    body_rel = _make_test_image(app_module, f"body_{uid}_{suffix}.png")
+    set_body_photo(uid, body_rel)
+    garment_rel = _make_test_image(app_module, f"garment_{uid}_{suffix}.png")
+    gid = add_garment(user_id=uid, name="Test Shirt", type_="shirt", color="blue",
+                      brand="", fit="", occasion="", tags=[], image_path=garment_rel, notes="")
+    return body_rel, gid
+
+
+def test_tryon_job_runs_and_can_be_polled(app_module, logged_in, monkeypatch):
+    import time as _time
+    c, uid = logged_in
+    monkeypatch.setattr(app_module, "GEMINI_API_KEY", "fake")
+    monkeypatch.setattr(app_module, "tryon", lambda body, pngs, names: b"fake-png-bytes")
+    _, gid = _setup_tryon_garment(app_module, uid, "poll")
+
+    r = c.post("/suggest/tryon", json={"garment_ids": [gid]})
+    assert r.status_code == 200
+    job_id = r.get_json()["job_id"]
+
+    result = {"status": "running"}
+    for _ in range(50):
+        result = c.get(f"/suggest/tryon/{job_id}/status").get_json()
+        if result["status"] != "running":
+            break
+        _time.sleep(0.05)
+    assert result["status"] == "done"
+    assert result["url"].startswith("/static/uploads/tryon_")
+
+
+def test_tryon_status_unknown_job_404(logged_in):
+    c, uid = logged_in
+    assert c.get("/suggest/tryon/not-a-real-job/status").status_code == 404
+
+
+def test_tryon_status_rejects_foreign_job(app_module, logged_in):
+    from database import get_or_create_user
+    c, uid = logged_in
+    other_uid = get_or_create_user("Other Tryon User")["id"]
+    job_id = "some-other-users-tryon-job"
+    with app_module._tryon_jobs_lock:
+        app_module._tryon_jobs[job_id] = {"status": "done", "user_id": other_uid, "created_at": 0, "url": "/static/x.png"}
+    r = c.get(f"/suggest/tryon/{job_id}/status")
+    assert r.status_code == 404
+
+
+def test_tryon_cache_hit_resolves_without_a_job(app_module, logged_in, monkeypatch):
+    c, uid = logged_in
+    monkeypatch.setattr(app_module, "GEMINI_API_KEY", "fake")
+    body_rel, gid = _setup_tryon_garment(app_module, uid, "cache")
+
+    key = app_module._tryon_key(uid, body_rel, [gid])
+    cached_rel = f"uploads/{app_module._unique_name('tryon_', '.png')}"
+    (app_module.DATA_DIR / cached_rel).write_bytes(b"fake-cached-png")
+    app_module._tryon_cache[key] = cached_rel
+
+    r = c.post("/suggest/tryon", json={"garment_ids": [gid]})
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body.get("cached") is True
+    assert "job_id" not in body

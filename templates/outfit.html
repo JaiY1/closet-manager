@@ -451,6 +451,66 @@
     }
   }
 
+  // The actual Gemini render runs server-side as a background job (see
+  // app.py) so it survives the tab being backgrounded/suspended — we poll for
+  // the result. The job id (+ which garments it's for) is stashed in
+  // localStorage so coming back to this page picks the render back up.
+  const TRYON_JOB_KEY = 'closet_tryon_job_v1';
+  function saveTryonJob(jobId, ids) {
+    try { localStorage.setItem(TRYON_JOB_KEY, JSON.stringify({ jobId, ids, startedAt: Date.now() })); } catch {}
+  }
+  function clearTryonJob() {
+    try { localStorage.removeItem(TRYON_JOB_KEY); } catch {}
+  }
+  function loadTryonJob() {
+    try {
+      const raw = localStorage.getItem(TRYON_JOB_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  }
+
+  function showTryonResult(url) {
+    document.getElementById('tryonResult').innerHTML = `<img src="${esc(url)}" alt="You in this outfit">`;
+    document.getElementById('tryonStatus').textContent = '';
+    document.getElementById('tryonHint').textContent =
+      'AI-generated preview — proportions and likeness are approximate.';
+  }
+
+  function pollTryonJob(jobId) {
+    const status = document.getElementById('tryonStatus');
+    const btn = document.getElementById('tryonBtn');
+    const tick = async () => {
+      let data;
+      try {
+        const res = await fetch(`/suggest/tryon/${jobId}/status`);
+        if (res.status === 404) {
+          status.textContent = '⚠️ That render expired or was not found. Try again.';
+          btn.disabled = false;
+          clearTryonJob();
+          return;
+        }
+        data = await res.json();
+      } catch (e) {
+        // Transient blip (e.g. tab just came back from being backgrounded) —
+        // the render is still running server-side, so just retry.
+        setTimeout(tick, 1500);
+        return;
+      }
+      if (data.status === 'running') {
+        setTimeout(tick, 1500);
+        return;
+      }
+      clearTryonJob();
+      btn.disabled = false;
+      if (data.status === 'error') {
+        status.textContent = '⚠️ ' + (data.error || 'Something went wrong.');
+        return;
+      }
+      showTryonResult(data.url);
+    };
+    tick();
+  }
+
   async function runTryon() {
     const btn = document.getElementById('tryonBtn');
     const status = document.getElementById('tryonStatus');
@@ -458,7 +518,7 @@
     const ids = [...selectedIds];
     if (!ids.length) return;
     btn.disabled = true;
-    status.textContent = 'Rendering you in this outfit — about 10–15 seconds…';
+    status.textContent = 'Rendering you in this outfit — this keeps running even if you switch tabs…';
     out.innerHTML = '';
     try {
       const res = await fetch('/suggest/tryon', {
@@ -470,23 +530,44 @@
       if (data.error === 'no_body_photo') {
         hasBodyPhoto = false; bodyPhotoUrl = null; renderBodyRow();
         status.textContent = '☝️ Add a photo of yourself first.';
+        btn.disabled = false;
       } else if (data.error) {
         status.textContent = '⚠️ ' + data.error;
-      } else {
-        out.innerHTML = `<img src="${esc(data.url)}" alt="You in this outfit">`;
-        status.textContent = '';
-        document.getElementById('tryonHint').textContent =
-          'AI-generated preview — proportions and likeness are approximate.';
+        btn.disabled = false;
+      } else if (data.url) {
+        // Cache hit — resolved immediately, no background job was needed.
+        showTryonResult(data.url);
+        btn.disabled = false;
+      } else if (data.job_id) {
+        saveTryonJob(data.job_id, ids);
+        pollTryonJob(data.job_id);
       }
     } catch {
       status.textContent = '⚠️ Try-on failed. Try again.';
+      btn.disabled = false;
     }
-    btn.disabled = false;
   }
 
   function changeBodyPhoto(e) {
     if (e) e.preventDefault();
     document.getElementById('bodyInput').click();
   }
+
+  // Resume an in-flight render if we're coming back to this page mid-job.
+  (function resumeTryonJob() {
+    const job = loadTryonJob();
+    if (!job) return;
+    if (Date.now() - job.startedAt > 5 * 60 * 1000) { clearTryonJob(); return; }  // stale, drop it
+    (job.ids || []).forEach(id => {
+      selectedIds.add(id);
+      const row = document.querySelector(`.garment-row[data-id="${id}"]`);
+      if (row) row.classList.add('selected');
+    });
+    if (!selectedIds.size) { clearTryonJob(); return; }
+    updatePreview();  // shows the try-on panel + selection chips
+    document.getElementById('tryonBtn').disabled = true;
+    document.getElementById('tryonStatus').textContent = 'Resuming your render — this keeps running even if you switch tabs…';
+    pollTryonJob(job.jobId);
+  })();
 </script>
 {% endblock %}
