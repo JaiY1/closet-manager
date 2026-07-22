@@ -5,6 +5,7 @@ import os
 import secrets
 import shutil
 import tarfile
+import threading
 import time
 import uuid
 from io import BytesIO
@@ -496,26 +497,29 @@ def add_photo_page():
     return render_template("add_photo.html")
 
 
-@app.route("/add/photo/analyze", methods=["POST"])
-def add_photo_analyze():
-    """Detect every garment in an uploaded outfit photo, reconstruct each as a
-    clean transparent cutout, and return previews (base64) for review. Nothing is
-    saved to the closet here — the user confirms via /add/photo/confirm."""
-    if 'image' not in request.files or not request.files['image'].filename:
-        return jsonify({"error": "No image provided"}), 400
-    if not ANTHROPIC_API_KEY:
-        return jsonify({"error": "ANTHROPIC_API_KEY not set in .env"}), 503
-    # In opt-in mode we don't call Gemini here (reconstruction happens on confirm),
-    # so only require the Gemini key up front in the eager mode.
-    if not OPTIN_CUTOUTS and not GEMINI_API_KEY:
-        return jsonify({"error": "GEMINI_API_KEY not set in .env"}), 503
+# Detection + reconstruction runs in a background thread, decoupled from the
+# request that kicked it off — a multi-item photo can take up to ~1 min of
+# sequential Gemini calls, and a mobile browser backgrounding/suspending the tab
+# mid-request was killing the whole import. The client polls for the result
+# instead of holding one long-lived connection open.
+_PHOTO_JOB_TTL = 3600  # prune finished jobs after an hour
+_photo_jobs = {}
+_photo_jobs_lock = threading.Lock()
 
-    uid = session['user_id']
-    photo_bytes = request.files['image'].read()
+
+def _prune_photo_jobs():
+    cutoff = time.time() - _PHOTO_JOB_TTL
+    for jid in [j for j, v in _photo_jobs.items() if v.get('created_at', 0) < cutoff]:
+        _photo_jobs.pop(jid, None)
+
+
+def _run_photo_analyze_job(job_id, uid, photo_bytes):
     try:
         detected = detect_garments_in_photo(photo_bytes)
     except Exception as e:
-        return jsonify({"error": f"Detection failed: {e}"}), 500
+        with _photo_jobs_lock:
+            _photo_jobs[job_id].update(status="error", error=f"Detection failed: {e}")
+        return
 
     items = []
     for g in detected:
@@ -545,7 +549,45 @@ def add_photo_analyze():
             g['error'] = _friendly_gemini_error(e)
             items.append(g)
 
-    return jsonify({"garments": items, "optin": OPTIN_CUTOUTS})
+    with _photo_jobs_lock:
+        _photo_jobs[job_id].update(status="done", garments=items, optin=OPTIN_CUTOUTS)
+
+
+@app.route("/add/photo/analyze", methods=["POST"])
+def add_photo_analyze():
+    """Kick off garment detection + cutout reconstruction as a background job and
+    return its id immediately. Nothing is saved to the closet here — the user
+    confirms via /add/photo/confirm once they've reviewed the poll result."""
+    if 'image' not in request.files or not request.files['image'].filename:
+        return jsonify({"error": "No image provided"}), 400
+    if not ANTHROPIC_API_KEY:
+        return jsonify({"error": "ANTHROPIC_API_KEY not set in .env"}), 503
+    # In opt-in mode we don't call Gemini here (reconstruction happens on confirm),
+    # so only require the Gemini key up front in the eager mode.
+    if not OPTIN_CUTOUTS and not GEMINI_API_KEY:
+        return jsonify({"error": "GEMINI_API_KEY not set in .env"}), 503
+
+    uid = session['user_id']
+    photo_bytes = request.files['image'].read()
+    job_id = uuid.uuid4().hex
+    with _photo_jobs_lock:
+        _prune_photo_jobs()
+        _photo_jobs[job_id] = {"status": "running", "user_id": uid, "created_at": time.time()}
+    threading.Thread(target=_run_photo_analyze_job, args=(job_id, uid, photo_bytes), daemon=True).start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/add/photo/analyze/<job_id>/status")
+def add_photo_analyze_status(job_id):
+    job = _photo_jobs.get(job_id)
+    # 404 (not 403) for a foreign job_id too — don't confirm it exists at all.
+    if not job or job['user_id'] != session['user_id']:
+        return jsonify({"error": "Job not found"}), 404
+    if job['status'] == 'error':
+        return jsonify({"status": "error", "error": job.get('error', 'Something went wrong.')})
+    if job['status'] == 'done':
+        return jsonify({"status": "done", "garments": job.get('garments', []), "optin": job.get('optin', False)})
+    return jsonify({"status": "running"})
 
 
 @app.route("/add/photo/cutout", methods=["POST"])

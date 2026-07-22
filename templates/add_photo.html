@@ -194,9 +194,32 @@
     analyze(file);
   }
 
+  // The actual detection/reconstruction runs server-side as a background job
+  // (see app.py) so it survives the tab being backgrounded, suspended, or even
+  // reloaded — we just poll for the result. The job id is stashed in
+  // localStorage so coming back to this page (e.g. after switching tabs on
+  // mobile Safari, which can discard the page) picks the import back up
+  // instead of losing it.
+  const JOB_KEY = 'closet_photo_job_v1';
+  const POLL_MS = 1500;
+  let pollTimer = null;
+
+  function saveJob(jobId) {
+    try { localStorage.setItem(JOB_KEY, JSON.stringify({ jobId, startedAt: Date.now() })); } catch {}
+  }
+  function clearJob() {
+    try { localStorage.removeItem(JOB_KEY); } catch {}
+  }
+  function loadJob() {
+    try {
+      const raw = localStorage.getItem(JOB_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  }
+
   async function analyze(file) {
     const status = document.getElementById('status');
-    status.textContent = 'Detecting garments and reconstructing cutouts — this can take a minute…';
+    status.textContent = 'Detecting garments and reconstructing cutouts — this keeps running even if you switch tabs…';
     document.getElementById('reviewGrid').innerHTML = '';
     document.getElementById('actions').style.display = 'none';
 
@@ -206,6 +229,41 @@
       const res = await fetch('/add/photo/analyze', { method: 'POST', body: fd });
       const data = await res.json();
       if (data.error) { status.textContent = '⚠️ ' + data.error; return; }
+      saveJob(data.job_id);
+      pollJob(data.job_id);
+    } catch (e) {
+      status.textContent = '⚠️ Something went wrong. Try again.';
+    }
+  }
+
+  function pollJob(jobId) {
+    clearTimeout(pollTimer);
+    const status = document.getElementById('status');
+    const tick = async () => {
+      let data;
+      try {
+        const res = await fetch(`/add/photo/analyze/${jobId}/status`);
+        if (res.status === 404) {
+          status.textContent = '⚠️ That import expired or was not found. Try again.';
+          clearJob();
+          return;
+        }
+        data = await res.json();
+      } catch (e) {
+        // Transient blip (e.g. tab just came back from being backgrounded) —
+        // the job is still running server-side, so just retry.
+        pollTimer = setTimeout(tick, POLL_MS);
+        return;
+      }
+      if (data.status === 'running') {
+        pollTimer = setTimeout(tick, POLL_MS);
+        return;
+      }
+      clearJob();
+      if (data.status === 'error') {
+        status.textContent = '⚠️ ' + (data.error || 'Something went wrong.');
+        return;
+      }
       detected = data.garments || [];
       const optin = !!data.optin;
       renderReview();
@@ -213,10 +271,19 @@
       status.textContent = ok
         ? `Found ${detected.length} item${detected.length===1?'':'s'}. Review, uncheck any you don't want${optin ? ' — clean cutouts are generated only for the ones you add' : ''}.`
         : 'No garments detected. Try a clearer photo.';
-    } catch (e) {
-      status.textContent = '⚠️ Something went wrong. Try again.';
-    }
+    };
+    tick();
   }
+
+  // Resume an in-flight import if we're coming back to this page mid-job.
+  (function resumeJob() {
+    const job = loadJob();
+    if (!job) return;
+    if (Date.now() - job.startedAt > 10 * 60 * 1000) { clearJob(); return; }  // stale, drop it
+    document.getElementById('uploadZone').style.display = 'none';
+    document.getElementById('status').textContent = 'Resuming your import — this keeps running even if you switch tabs…';
+    pollJob(job.jobId);
+  })();
 
   function renderReview() {
     const grid = document.getElementById('reviewGrid');

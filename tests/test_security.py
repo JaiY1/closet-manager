@@ -1,5 +1,7 @@
 """Auth gates, upload safety, and cross-user isolation regressions."""
 
+from io import BytesIO
+
 
 # --- Login gate ---
 
@@ -133,3 +135,45 @@ def test_calendar_requires_date(logged_in):
     c, uid = logged_in
     r = c.post("/calendar", json={"garment_ids": []})
     assert r.status_code == 400
+
+
+# --- Background photo-analyze jobs (regression: tab backgrounding used to kill
+# the in-flight Gemini call; the work now runs server-side and is polled) ---
+
+def test_photo_analyze_job_runs_and_can_be_polled(app_module, logged_in, monkeypatch):
+    import time as _time
+    c, uid = logged_in
+    monkeypatch.setattr(app_module, "ANTHROPIC_API_KEY", "fake")
+    monkeypatch.setattr(app_module, "OPTIN_CUTOUTS", True)  # skips Gemini reconstruction — just exercises the job plumbing
+    monkeypatch.setattr(app_module, "detect_garments_in_photo",
+                         lambda photo_bytes: [{"name": "Test Shirt", "type": "shirt", "color": "blue"}])
+
+    r = c.post("/add/photo/analyze", data={'image': (BytesIO(b"fake-bytes"), 'photo.jpg')},
+               content_type='multipart/form-data')
+    assert r.status_code == 200
+    job_id = r.get_json()["job_id"]
+
+    body = {"status": "running"}
+    for _ in range(50):
+        body = c.get(f"/add/photo/analyze/{job_id}/status").get_json()
+        if body["status"] != "running":
+            break
+        _time.sleep(0.05)
+    assert body["status"] == "done"
+    assert body["garments"][0]["name"] == "Test Shirt"
+
+
+def test_photo_analyze_status_unknown_job_404(logged_in):
+    c, uid = logged_in
+    assert c.get("/add/photo/analyze/not-a-real-job/status").status_code == 404
+
+
+def test_photo_analyze_status_rejects_foreign_job(app_module, logged_in):
+    from database import get_or_create_user
+    c, uid = logged_in
+    other_uid = get_or_create_user("Other Photo User")["id"]
+    job_id = "some-other-users-job"
+    with app_module._photo_jobs_lock:
+        app_module._photo_jobs[job_id] = {"status": "done", "user_id": other_uid, "created_at": 0, "garments": []}
+    r = c.get(f"/add/photo/analyze/{job_id}/status")
+    assert r.status_code == 404
