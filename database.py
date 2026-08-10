@@ -10,6 +10,14 @@ DB_PATH = DATA_DIR / "closet.db"
 DEFAULT_USER_NAME = "Jai Yadav"
 
 
+class NameTaken(Exception):
+    """Raised when a signup's display name collides with an existing user."""
+
+
+class EmailTaken(Exception):
+    """Raised when a signup/email-link collides with an existing user's email."""
+
+
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -134,7 +142,34 @@ def init_db():
     conn.commit()
 
     _migrate_to_multiuser(conn)
+    _migrate_auth_columns(conn)
     conn.close()
+
+
+def _migrate_auth_columns(conn):
+    """One-time migration: add real per-user auth (email/password/Google) on top
+    of the old name-only accounts. Existing rows get auth_provider='legacy' —
+    the app prompts them to secure their account with a password or Google."""
+    user_cols = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+    if "email" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN email TEXT")
+    if "password_hash" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN password_hash TEXT DEFAULT ''")
+    if "google_sub" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN google_sub TEXT")
+    if "auth_provider" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN auth_provider TEXT DEFAULT 'legacy'")
+    # Partial unique indexes — NULL/'' emails or google_subs (legacy rows) don't
+    # collide with each other, only real values do.
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email COLLATE NOCASE) "
+        "WHERE email IS NOT NULL AND email != ''"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub) "
+        "WHERE google_sub IS NOT NULL AND google_sub != ''"
+    )
+    conn.commit()
 
 
 def _migrate_to_multiuser(conn):
@@ -234,6 +269,101 @@ def get_or_create_user(name: str) -> dict:
     conn.commit()
     conn.close()
     return {"id": user_id, "name": name}
+
+
+def get_user_by_email(email: str) -> Optional[dict]:
+    conn = get_db()
+    row = conn.execute("SELECT * FROM users WHERE email = ? COLLATE NOCASE", (email.strip(),)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_user_by_google_sub(sub: str) -> Optional[dict]:
+    conn = get_db()
+    row = conn.execute("SELECT * FROM users WHERE google_sub = ?", (sub,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def create_user_password(name: str, email: str, password_hash: str) -> dict:
+    conn = get_db()
+    try:
+        cur = conn.execute(
+            "INSERT INTO users (name, email, password_hash, auth_provider) VALUES (?, ?, ?, 'password')",
+            (name.strip(), email.strip(), password_hash)
+        )
+        user_id = cur.lastrowid
+        conn.commit()
+    except sqlite3.IntegrityError as e:
+        conn.close()
+        raise EmailTaken() if "email" in str(e) else NameTaken()
+    conn.close()
+    return {"id": user_id, "name": name.strip(), "email": email.strip()}
+
+
+def create_user_google(name: str, email: str, google_sub: str) -> dict:
+    conn = get_db()
+    try:
+        cur = conn.execute(
+            "INSERT INTO users (name, email, google_sub, auth_provider) VALUES (?, ?, ?, 'google')",
+            (name.strip(), email.strip(), google_sub)
+        )
+        user_id = cur.lastrowid
+        conn.commit()
+    except sqlite3.IntegrityError as e:
+        conn.close()
+        raise EmailTaken() if "email" in str(e) else NameTaken()
+    conn.close()
+    return {"id": user_id, "name": name.strip(), "email": email.strip()}
+
+
+def set_user_password(user_id: int, password_hash: str):
+    """Set/replace a user's password. Promotes 'google' -> 'both'; leaves 'legacy' as 'password'."""
+    conn = get_db()
+    conn.execute(
+        "UPDATE users SET password_hash = ?, "
+        "auth_provider = CASE WHEN auth_provider = 'google' THEN 'both' ELSE 'password' END "
+        "WHERE id = ?",
+        (password_hash, user_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def set_user_email_and_password(user_id: int, email: str, password_hash: str):
+    """Used by the legacy-account 'secure your account' flow, which sets an email
+    for the first time alongside the password."""
+    conn = get_db()
+    try:
+        conn.execute(
+            "UPDATE users SET email = ?, password_hash = ?, "
+            "auth_provider = CASE WHEN auth_provider = 'google' THEN 'both' ELSE 'password' END "
+            "WHERE id = ?",
+            (email.strip(), password_hash, user_id)
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.close()
+        raise EmailTaken()
+    conn.close()
+
+
+def link_google_to_user(user_id: int, google_sub: str, email: str = ""):
+    """Attach a Google identity to an already-logged-in account. Fills in email
+    only if the account doesn't already have one — never overwrites it."""
+    conn = get_db()
+    try:
+        conn.execute(
+            "UPDATE users SET google_sub = ?, email = COALESCE(NULLIF(email, ''), NULLIF(?, '')), "
+            "auth_provider = CASE WHEN auth_provider = 'password' THEN 'both' ELSE 'google' END "
+            "WHERE id = ?",
+            (google_sub, email, user_id)
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.close()
+        raise EmailTaken()
+    conn.close()
 
 
 def get_body_photo(user_id: int) -> str:

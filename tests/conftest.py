@@ -28,9 +28,25 @@ def client(app_module):
 
 @pytest.fixture()
 def logged_in(app_module):
-    """A test client with an authenticated session for a dedicated test user."""
-    from database import get_or_create_user
+    """A test client with an authenticated session for a dedicated test user.
+    Has a password set (auth_provider != 'legacy') so it doesn't get bounced to
+    the secure-account prompt — use `legacy_logged_in` to test that prompt."""
+    from database import get_or_create_user, set_user_password
     user = get_or_create_user("Pytest User")
+    set_user_password(user["id"], app_module._hash_password("pytest-password-123"))
+    with app_module.app.test_client() as c:
+        with c.session_transaction() as s:
+            s["user_id"] = user["id"]
+            s["user_name"] = user["name"]
+        yield c, user["id"]
+
+
+@pytest.fixture()
+def legacy_logged_in(app_module):
+    """A test client whose session belongs to a pre-auth (name-only) account —
+    for testing the 'secure your account' gate itself."""
+    from database import get_or_create_user
+    user = get_or_create_user("Legacy Pytest User")
     with app_module.app.test_client() as c:
         with c.session_transaction() as s:
             s["user_id"] = user["id"]

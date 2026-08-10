@@ -3,11 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Closet — Log in</title>
-  <link rel="manifest" href="/static/manifest.json">
-  <meta name="theme-color" content="#e8590c">
-  <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
-  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Closet — Secure your account</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -46,7 +42,7 @@
       border-radius: 16px;
       padding: 40px;
       width: 100%;
-      max-width: 380px;
+      max-width: 400px;
       box-shadow: 8px 8px 0 var(--line);
     }
 
@@ -66,7 +62,14 @@
       text-transform: uppercase;
       letter-spacing: 1.5px;
       color: var(--muted);
-      margin-bottom: 28px;
+      margin-bottom: 12px;
+    }
+
+    .blurb {
+      font-size: 0.88rem;
+      color: var(--text);
+      line-height: 1.55;
+      margin-bottom: 24px;
     }
 
     label {
@@ -79,7 +82,7 @@
       margin-bottom: 6px;
     }
 
-    input[type="text"], input[type="email"], input[type="password"] {
+    input[type="email"], input[type="password"] {
       width: 100%;
       padding: 11px 14px;
       background: var(--surface);
@@ -149,7 +152,7 @@
     }
 
     .hint {
-      font-size: 0.85rem;
+      font-size: 0.8rem;
       color: var(--muted);
       margin-top: 18px;
       line-height: 1.55;
@@ -172,27 +175,25 @@
 
 <div class="login-card">
   <div class="brand">POP<span>.</span></div>
-  <div class="subtitle">Your closet</div>
+  <div class="subtitle">Secure your account</div>
+  <p class="blurb">We've added real sign-in. Set a password (or link Google) for <strong>{{ user.name }}</strong> so you keep access to your closet — this only happens once.</p>
 
   {% if error %}<div class="error">{{ error }}</div>{% endif %}
 
   {% if google_enabled %}
-    <a href="/auth/google" class="btn-google">Continue with Google</a>
-    <div class="divider">or</div>
+    <a href="/auth/google" class="btn-google">Link Google account</a>
+    <div class="divider">or set a password</div>
   {% endif %}
 
-  <form method="POST" action="/login">
+  <form method="POST" action="/secure-account">
     <label>Email</label>
     <input type="email" name="email" placeholder="you@example.com" autocomplete="email" autofocus required>
     <label>Password</label>
-    <input type="password" name="password" placeholder="••••••••" autocomplete="current-password" required>
-    <button type="submit" class="btn-primary">Log in</button>
+    <input type="password" name="password" placeholder="At least 8 characters" autocomplete="new-password" minlength="8" required>
+    <button type="submit" class="btn-primary">Save</button>
   </form>
 
-  <p class="hint">
-    <a href="/forgot-password">Forgot your password?</a><br>
-    New here? <a href="/signup">Create an account</a>
-  </p>
+  <p class="hint"><a href="/logout">Log out instead</a></p>
 </div>
 
 </body>

@@ -65,7 +65,7 @@ python app.py          # http://localhost:5002
 GEMINI_API_KEY is optional — without it the app runs fine and the photo-import / try-on routes return a clean 503. The image model requires a **billing-enabled** Google Cloud project (not free tier). Set `DATA_DIR=/data` (a mounted volume) for production so redeploys don't wipe data; it defaults to the project root locally.
 
 ### What's next
-- **Auth is the open deploy blocker** — name-only login means anyone can be anyone. Cost caps protect the bill, but real auth (passwords / magic-link) is needed before a truly public URL.
+- **Real auth is scaffolded, not fully live** (2026-07-21) — email/password signup + login, "Sign in with Google" (OIDC via Authlib), forgot/reset password (Resend), and a one-time "secure your account" prompt for the old name-only users all exist in `app.py`/`database.py`/`templates/`. Signup is intentionally open (no email verification, no ACCESS_CODE gate). **Not yet wired to real credentials** — `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` and `RESEND_API_KEY` are unset, so Google sign-in is hidden and password-reset links are only logged, not emailed. Set those env vars (locally + Railway) to go live.
 - Parallelize the sequential Gemini cutout calls (a multi-garment import is ~1 min)
 - Retailer affiliate links on shopping results; deeper calendar analytics (wear streaks, cost-per-wear)
 

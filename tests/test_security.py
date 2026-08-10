@@ -23,10 +23,107 @@ def test_healthz_and_login_are_public(client):
     assert client.get("/login").status_code == 200
 
 
-def test_login_creates_session_and_grants_access(client):
-    r = client.post("/login", data={"name": "Login Flow User"}, follow_redirects=False)
+def test_signup_creates_session_and_grants_access(client):
+    r = client.post("/signup", data={
+        "name": "Signup Flow User", "email": "signup-flow@example.com", "password": "correct-horse-battery",
+    }, follow_redirects=False)
     assert r.status_code == 302
     assert client.get("/").status_code == 200
+
+
+def test_signup_rejects_short_password(client):
+    r = client.post("/signup", data={
+        "name": "Short Pw User", "email": "short-pw@example.com", "password": "short",
+    })
+    assert r.status_code == 400
+    assert "8 characters" in r.get_data(as_text=True)
+
+
+def test_signup_rejects_duplicate_email(client):
+    client.post("/signup", data={
+        "name": "Dup User One", "email": "dup@example.com", "password": "correct-horse-battery",
+    })
+    r = client.post("/signup", data={
+        "name": "Dup User Two", "email": "dup@example.com", "password": "correct-horse-battery",
+    })
+    assert r.status_code == 409
+    assert "already exists" in r.get_data(as_text=True)
+
+
+def test_login_with_correct_password_succeeds(client):
+    client.post("/signup", data={
+        "name": "Login Pw User", "email": "login-pw@example.com", "password": "correct-horse-battery",
+    })
+    client.get("/logout")
+    r = client.post("/login", data={"email": "login-pw@example.com", "password": "correct-horse-battery"},
+                     follow_redirects=False)
+    assert r.status_code == 302
+    assert client.get("/").status_code == 200
+
+
+def test_login_with_wrong_password_rejected(client):
+    client.post("/signup", data={
+        "name": "Wrong Pw User", "email": "wrong-pw@example.com", "password": "correct-horse-battery",
+    })
+    client.get("/logout")
+    r = client.post("/login", data={"email": "wrong-pw@example.com", "password": "not-the-password"})
+    assert r.status_code == 401
+    assert client.get("/").status_code == 302  # still logged out
+
+
+def test_login_unknown_email_rejected_generically(client):
+    r = client.post("/login", data={"email": "nobody@example.com", "password": "whatever123"})
+    assert r.status_code == 401
+    assert "Invalid email or password" in r.get_data(as_text=True)
+
+
+# --- Legacy account migration ---
+
+def test_legacy_session_redirected_to_secure_account(legacy_logged_in):
+    c, uid = legacy_logged_in
+    r = c.get("/", follow_redirects=False)
+    assert r.status_code == 302 and "/secure-account" in r.headers["Location"]
+
+
+def test_legacy_session_can_reach_logout_and_secure_page_directly(legacy_logged_in):
+    c, uid = legacy_logged_in
+    assert c.get("/secure-account").status_code == 200
+    assert c.get("/logout").status_code == 302
+
+
+def test_securing_legacy_account_grants_normal_access(legacy_logged_in):
+    c, uid = legacy_logged_in
+    r = c.post("/secure-account", data={"email": "secured@example.com", "password": "correct-horse-battery"},
+               follow_redirects=False)
+    assert r.status_code == 302 and "/secure-account" not in r.headers["Location"]
+    assert c.get("/").status_code == 200
+
+
+# --- Forgot / reset password ---
+
+def test_forgot_password_always_returns_generic_success(client):
+    r = client.post("/forgot-password", data={"email": "nobody-at-all@example.com"})
+    assert r.status_code == 200
+    assert "we&#39;ve sent" in r.get_data(as_text=True).lower() or "we've sent" in r.get_data(as_text=True).lower()
+
+
+def test_reset_password_with_invalid_token_rejected(client):
+    r = client.get("/reset-password/not-a-real-token")
+    assert r.status_code == 200
+    assert "invalid or has expired" in r.get_data(as_text=True)
+
+
+def test_reset_password_flow_end_to_end(client, app_module):
+    client.post("/signup", data={
+        "name": "Reset Flow User", "email": "reset-flow@example.com", "password": "correct-horse-battery",
+    })
+    client.get("/logout")
+    token = app_module._reset_serializer.dumps({"uid": app_module.get_user_by_email("reset-flow@example.com")["id"]})
+    r = client.post(f"/reset-password/{token}", data={"password": "new-correct-horse"}, follow_redirects=False)
+    assert r.status_code == 302
+    r2 = client.post("/login", data={"email": "reset-flow@example.com", "password": "new-correct-horse"},
+                      follow_redirects=False)
+    assert r2.status_code == 302
 
 
 # --- Upload helpers ---

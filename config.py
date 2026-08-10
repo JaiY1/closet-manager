@@ -49,11 +49,21 @@ DAILY_GLOBAL_CAP   = int(os.getenv("DAILY_GLOBAL_CAP", "200"))  # everyone, per 
 MONTHLY_GLOBAL_CAP = int(os.getenv("MONTHLY_GLOBAL_CAP", "1000"))  # everyone, per month
 
 # --- Deployment ---
-# Shared gate for UAT: when set, users must also enter this code to log in, so the
-# URL isn't open to the internet. Unset locally = no gate.
+# Legacy shared gate — no longer used for login (real per-user auth replaced it),
+# kept only to gate the /admin/import-data escape hatch. Unset locally = no gate.
 ACCESS_CODE   = os.getenv("ACCESS_CODE")
 # Optional "Report an issue" link shown in the nav when set.
 FEEDBACK_EMAIL = os.getenv("FEEDBACK_EMAIL")
 # Send session cookies only over HTTPS. Enable in production (behind TLS); keep off
 # locally so http://localhost login still works.
 SECURE_COOKIES = _flag("SECURE_COOKIES", False)
+
+# --- Auth ---
+# Google OAuth (Sign in with Google). Both unset = the Google button is hidden
+# and /auth/google routes redirect to login rather than erroring.
+GOOGLE_CLIENT_ID     = os.getenv("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
+# Resend (transactional email) for the forgot-password flow. Unset = reset links
+# are logged instead of emailed — fine for local dev, not for production.
+RESEND_API_KEY   = os.getenv("RESEND_API_KEY")
+RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "Closet <onboarding@resend.dev>")

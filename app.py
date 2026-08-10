@@ -14,12 +14,19 @@ from pathlib import Path
 from PIL import Image
 from flask import Flask, request, jsonify, render_template, redirect, url_for, session, send_from_directory
 from werkzeug.middleware.proxy_fix import ProxyFix
+from werkzeug.security import generate_password_hash, check_password_hash
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+from authlib.integrations.flask_client import OAuth
+from authlib.common.security import generate_token
 
 from config import (
     ANTHROPIC_API_KEY, GEMINI_API_KEY, SECRET_KEY, DATA_DIR,
     BODY_PHOTO_GATE, OPTIN_CUTOUTS, PERSIST_TRYON,
     DAILY_USER_CAP, DAILY_GLOBAL_CAP, MONTHLY_GLOBAL_CAP,
     ACCESS_CODE, FEEDBACK_EMAIL, SECURE_COOKIES,
+    GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, RESEND_API_KEY, RESEND_FROM_EMAIL,
 )
 from database import (
     init_db, add_garment, get_garment, get_all_garments, update_garment, delete_garment,
@@ -29,6 +36,9 @@ from database import (
     get_or_create_user, get_user, get_body_photo, set_body_photo,
     record_image_event, count_images_today, count_images_month,
     add_tryon_history, get_tryon_history,
+    get_user_by_email, get_user_by_google_sub, create_user_password, create_user_google,
+    set_user_password, set_user_email_and_password, link_google_to_user,
+    NameTaken, EmailTaken,
 )
 from vector_store import embed_garment, delete_garment as vs_delete
 from agents import (
@@ -56,9 +66,27 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 app.config.update(
     MAX_CONTENT_LENGTH=12 * 1024 * 1024,   # reject >12 MB uploads before disk/memory
     SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SAMESITE="Lax",         # blocks cross-site POST from carrying the session
     SESSION_COOKIE_SECURE=SECURE_COOKIES,  # True in prod (HTTPS); off locally
 )
+
+limiter = Limiter(get_remote_address, app=app, default_limits=[], storage_uri="memory://")
+
+_reset_serializer = URLSafeTimedSerializer(app.secret_key, salt="password-reset")
+_RESET_TOKEN_MAX_AGE = 3600  # 1 hour
+
+oauth = OAuth(app)
+google_oauth = None
+if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET:
+    google_oauth = oauth.register(
+        name="google",
+        client_id=GOOGLE_CLIENT_ID,
+        client_secret=GOOGLE_CLIENT_SECRET,
+        server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
+        client_kwargs={"scope": "openid email profile"},
+    )
+else:
+    logger.warning("GOOGLE_CLIENT_ID/SECRET not set — Google sign-in is disabled.")
 
 
 @app.errorhandler(413)
@@ -165,16 +193,33 @@ def _friendly_gemini_error(e) -> str:
 
 # --- Auth ---
 
+# Endpoints reachable without a session at all.
+_PUBLIC_ENDPOINTS = {
+    'login_page', 'do_login', 'signup_page', 'do_signup',
+    'forgot_password_page', 'do_forgot_password',
+    'reset_password_page', 'do_reset_password',
+    'google_login', 'google_callback',
+    'static', 'service_worker', 'healthz', 'admin_import_data',
+}
+# Endpoints a logged-in-but-not-yet-secured (legacy) account may still reach,
+# so the "secure your account" prompt itself and logout aren't a redirect loop.
+_SECURE_ACCOUNT_EXEMPT = {'secure_account_page', 'do_secure_account', 'logout'}
+
+
 @app.before_request
 def require_login():
     # NOTE: serve_upload (user images — body photos, try-on renders, cutouts) is
     # deliberately NOT exempt: browsers send the session cookie with <img>
     # requests, so logged-in pages keep working, while a leaked/shared image URL
     # no longer works without a session.
-    if request.endpoint in ('login_page', 'do_login', 'static', 'service_worker', 'healthz', 'admin_import_data') or request.endpoint is None:
+    if request.endpoint in _PUBLIC_ENDPOINTS or request.endpoint is None:
         return
     if 'user_id' not in session:
         return redirect(url_for('login_page'))
+    if request.endpoint not in _SECURE_ACCOUNT_EXEMPT:
+        user = get_user(session['user_id'])
+        if user and user['auth_provider'] == 'legacy':
+            return redirect(url_for('secure_account_page'))
 
 
 @app.context_processor
@@ -185,24 +230,66 @@ def inject_current_user():
     return ctx
 
 
+def _hash_password(password: str) -> str:
+    # Explicit method/iterations (OWASP's current minimum for PBKDF2-SHA256) —
+    # also sidesteps environments where hashlib.scrypt isn't available
+    # (Werkzeug's default method), e.g. Python built against LibreSSL.
+    return generate_password_hash(password, method="pbkdf2:sha256:600000")
+
+
+def _login_session(user):
+    # Clear first so nothing from a prior (possibly anonymous) session survives
+    # the privilege change.
+    session.clear()
+    session['user_id'] = user['id']
+    session['user_name'] = user['name']
+
+
 @app.route("/login")
 def login_page():
     if 'user_id' in session:
         return redirect(url_for('index'))
-    return render_template("login.html", require_code=bool(ACCESS_CODE))
+    return render_template("login.html", google_enabled=bool(google_oauth))
 
 
 @app.route("/login", methods=["POST"])
+@limiter.limit("10 per minute")
 def do_login():
+    email = (request.form.get('email') or '').strip().lower()
+    password = request.form.get('password') or ''
+    user = get_user_by_email(email) if email else None
+    # Same generic error whether the email doesn't exist or the password is
+    # wrong — don't let the form reveal which accounts exist.
+    if not user or not user.get('password_hash') or not check_password_hash(user['password_hash'], password):
+        return render_template("login.html", google_enabled=bool(google_oauth), error="Invalid email or password."), 401
+    _login_session(user)
+    return redirect(url_for('index'))
+
+
+@app.route("/signup")
+def signup_page():
+    if 'user_id' in session:
+        return redirect(url_for('index'))
+    return render_template("signup.html", google_enabled=bool(google_oauth))
+
+
+@app.route("/signup", methods=["POST"])
+@limiter.limit("10 per minute")
+def do_signup():
     name = (request.form.get('name') or '').strip()
-    if not name:
-        return render_template("login.html", require_code=bool(ACCESS_CODE), error="Please enter a name.")
-    # Shared access gate for UAT — only enforced when ACCESS_CODE is configured.
-    if ACCESS_CODE and (request.form.get('code') or '').strip() != ACCESS_CODE:
-        return render_template("login.html", require_code=True, error="Incorrect access code.")
-    user = get_or_create_user(name)
-    session['user_id'] = user['id']
-    session['user_name'] = user['name']
+    email = (request.form.get('email') or '').strip().lower()
+    password = request.form.get('password') or ''
+    if not name or not email or not password:
+        return render_template("signup.html", google_enabled=bool(google_oauth), error="Name, email, and password are all required."), 400
+    if len(password) < 8:
+        return render_template("signup.html", google_enabled=bool(google_oauth), error="Password must be at least 8 characters."), 400
+    try:
+        user = create_user_password(name, email, _hash_password(password))
+    except EmailTaken:
+        return render_template("signup.html", google_enabled=bool(google_oauth), error="An account with that email already exists."), 409
+    except NameTaken:
+        return render_template("signup.html", google_enabled=bool(google_oauth), error="That name is already taken — try another."), 409
+    _login_session(user)
     return redirect(url_for('index'))
 
 
@@ -212,13 +299,170 @@ def logout():
     return redirect(url_for('login_page'))
 
 
+# --- Secure legacy accounts (pre-auth users, created via the old name-only login) ---
+
+@app.route("/secure-account")
+def secure_account_page():
+    if 'user_id' not in session:
+        return redirect(url_for('login_page'))
+    user = get_user(session['user_id'])
+    if not user or user['auth_provider'] != 'legacy':
+        return redirect(url_for('index'))
+    return render_template("secure_account.html", user=user, google_enabled=bool(google_oauth))
+
+
+@app.route("/secure-account", methods=["POST"])
+@limiter.limit("10 per minute")
+def do_secure_account():
+    if 'user_id' not in session:
+        return redirect(url_for('login_page'))
+    uid = session['user_id']
+    user = get_user(uid)
+    if not user or user['auth_provider'] != 'legacy':
+        return redirect(url_for('index'))
+    email = (request.form.get('email') or '').strip().lower()
+    password = request.form.get('password') or ''
+    if not email or not password:
+        return render_template("secure_account.html", user=user, google_enabled=bool(google_oauth), error="Email and password are both required."), 400
+    if len(password) < 8:
+        return render_template("secure_account.html", user=user, google_enabled=bool(google_oauth), error="Password must be at least 8 characters."), 400
+    try:
+        set_user_email_and_password(uid, email, _hash_password(password))
+    except EmailTaken:
+        return render_template("secure_account.html", user=user, google_enabled=bool(google_oauth), error="That email is already in use by another account."), 409
+    return redirect(url_for('index'))
+
+
+# --- Google sign-in (OpenID Connect) ---
+
+@app.route("/auth/google")
+def google_login():
+    if not google_oauth:
+        return redirect(url_for('login_page'))
+    nonce = generate_token()
+    session['oauth_nonce'] = nonce
+    redirect_uri = url_for('google_callback', _external=True)
+    return google_oauth.authorize_redirect(redirect_uri, nonce=nonce)
+
+
+@app.route("/auth/google/callback")
+def google_callback():
+    if not google_oauth:
+        return redirect(url_for('login_page'))
+    token = google_oauth.authorize_access_token()
+    nonce = session.pop('oauth_nonce', None)
+    claims = google_oauth.parse_id_token(token, nonce=nonce)
+    if not claims or not claims.get('email_verified'):
+        return render_template("login.html", google_enabled=True, error="Google sign-in failed: no verified email on that account."), 401
+
+    sub = claims['sub']
+    email = claims['email'].strip().lower()
+    name = claims.get('name') or email.split('@')[0]
+
+    if 'user_id' in session:
+        # Already logged in — this is the "link Google to my account" flow, not
+        # a fresh sign-in. Never silently merge into a *different* account.
+        uid = session['user_id']
+        conflict = get_user_by_google_sub(sub)
+        if conflict and conflict['id'] != uid:
+            return render_template(
+                "secure_account.html", user=get_user(uid), google_enabled=True,
+                error="That Google account is already linked to a different user."
+            ), 409
+        try:
+            link_google_to_user(uid, sub, email)
+        except EmailTaken:
+            return render_template(
+                "secure_account.html", user=get_user(uid), google_enabled=True,
+                error="That Google account's email is already used by another account."
+            ), 409
+        return redirect(url_for('index'))
+
+    user = get_user_by_google_sub(sub)
+    if not user:
+        existing = get_user_by_email(email)
+        if existing:
+            # An email/password account already owns this email — require the
+            # user to prove that login and link Google explicitly, rather than
+            # trusting Google's claim to hand over an existing account.
+            return render_template(
+                "login.html", google_enabled=True,
+                error="An account with this email already exists. Log in and link Google from your account."
+            ), 409
+        user = create_user_google(name, email, sub)
+    _login_session(user)
+    return redirect(url_for('index'))
+
+
+# --- Forgot / reset password ---
+
+def _send_password_reset_email(to_email: str, reset_url: str):
+    if not RESEND_API_KEY:
+        logger.info("RESEND_API_KEY not set — password reset link for %s: %s", to_email, reset_url)
+        return
+    import resend
+    resend.api_key = RESEND_API_KEY
+    try:
+        resend.Emails.send({
+            "from": RESEND_FROM_EMAIL,
+            "to": to_email,
+            "subject": "Reset your Closet password",
+            "html": f'<p>Click below to reset your password. This link expires in an hour.</p>'
+                    f'<p><a href="{reset_url}">{reset_url}</a></p>'
+                    f'<p>If you didn\'t request this, you can ignore this email.</p>',
+        })
+    except Exception:
+        logger.exception("Failed to send password-reset email to %s", to_email)
+
+
+@app.route("/forgot-password")
+def forgot_password_page():
+    return render_template("forgot_password.html")
+
+
+@app.route("/forgot-password", methods=["POST"])
+@limiter.limit("5 per minute")
+def do_forgot_password():
+    email = (request.form.get('email') or '').strip().lower()
+    user = get_user_by_email(email) if email else None
+    if user:
+        token = _reset_serializer.dumps({"uid": user['id']})
+        reset_url = url_for('reset_password_page', token=token, _external=True)
+        _send_password_reset_email(user['email'], reset_url)
+    # Identical response whether or not the email exists — don't leak account existence.
+    return render_template("forgot_password.html", sent=True)
+
+
+@app.route("/reset-password/<token>")
+def reset_password_page(token):
+    try:
+        _reset_serializer.loads(token, max_age=_RESET_TOKEN_MAX_AGE)
+    except (BadSignature, SignatureExpired):
+        return render_template("reset_password.html", invalid=True)
+    return render_template("reset_password.html", token=token)
+
+
+@app.route("/reset-password/<token>", methods=["POST"])
+@limiter.limit("10 per minute")
+def do_reset_password(token):
+    try:
+        data = _reset_serializer.loads(token, max_age=_RESET_TOKEN_MAX_AGE)
+    except (BadSignature, SignatureExpired):
+        return render_template("reset_password.html", invalid=True)
+    password = request.form.get('password') or ''
+    if len(password) < 8:
+        return render_template("reset_password.html", token=token, error="Password must be at least 8 characters."), 400
+    set_user_password(data['uid'], _hash_password(password))
+    session.clear()
+    return redirect(url_for('login_page'))
+
+
 # --- One-time local-to-server data migration ---
 # Platforms like Railway don't offer a shell/SFTP into the running container, so
 # this is the portable way to get a scripts/export_data.sh tarball onto the
-# server's DATA_DIR volume: POST it here instead. Gated by the same ACCESS_CODE
-# used for login (a deliberate choice — anyone who can log in via the UAT code
-# could also run this). Refuses entirely if ACCESS_CODE isn't set, since without
-# it there'd be no gate at all.
+# server's DATA_DIR volume: POST it here instead. Gated by ACCESS_CODE (now used
+# only for this admin route, not for login). Refuses entirely if ACCESS_CODE
+# isn't set, since without it there'd be no gate at all.
 
 _ADMIN_IMPORT_MAX_BYTES = 512 * 1024 * 1024  # generous for a full data export
 # A photo of a full outfit can detect many garments, each carrying its own
