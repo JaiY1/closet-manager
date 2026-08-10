@@ -176,7 +176,11 @@
 <div class="login-card">
   <div class="brand">POP<span>.</span></div>
   <div class="subtitle">Secure your account</div>
+  {% if user.auth_provider == 'legacy' %}
   <p class="blurb">We've added real sign-in. Set a password (or link Google) for <strong>{{ user.name }}</strong> so you keep access to your closet — this only happens once.</p>
+  {% else %}
+  <p class="blurb">Link a Google account to <strong>{{ user.name }}</strong>, or update your password below.</p>
+  {% endif %}
 
   {% if error %}<div class="error">{{ error }}</div>{% endif %}
 

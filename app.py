@@ -301,12 +301,20 @@ def logout():
 
 # --- Secure legacy accounts (pre-auth users, created via the old name-only login) ---
 
+
+# 'legacy' users are forced here (before_request); 'password' users can also
+# visit voluntarily (e.g. from a link in their account area) to link Google —
+# the "Link Google account" button is otherwise unreachable once a password's
+# already set. 'google'/'both' accounts have nothing left to add here.
+_SECURABLE_PROVIDERS = ('legacy', 'password')
+
+
 @app.route("/secure-account")
 def secure_account_page():
     if 'user_id' not in session:
         return redirect(url_for('login_page'))
     user = get_user(session['user_id'])
-    if not user or user['auth_provider'] != 'legacy':
+    if not user or user['auth_provider'] not in _SECURABLE_PROVIDERS:
         return redirect(url_for('index'))
     return render_template("secure_account.html", user=user, google_enabled=bool(google_oauth))
 
@@ -318,7 +326,7 @@ def do_secure_account():
         return redirect(url_for('login_page'))
     uid = session['user_id']
     user = get_user(uid)
-    if not user or user['auth_provider'] != 'legacy':
+    if not user or user['auth_provider'] not in _SECURABLE_PROVIDERS:
         return redirect(url_for('index'))
     email = (request.form.get('email') or '').strip().lower()
     password = request.form.get('password') or ''
