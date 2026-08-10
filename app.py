@@ -8,6 +8,7 @@ import tarfile
 import threading
 import time
 import uuid
+from datetime import timedelta
 from io import BytesIO
 from pathlib import Path
 
@@ -68,6 +69,7 @@ app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",         # blocks cross-site POST from carrying the session
     SESSION_COOKIE_SECURE=SECURE_COOKIES,  # True in prod (HTTPS); off locally
+    PERMANENT_SESSION_LIFETIME=timedelta(days=30),  # only applies when session.permanent is set
 )
 
 limiter = Limiter(get_remote_address, app=app, default_limits=[], storage_uri="memory://")
@@ -237,10 +239,14 @@ def _hash_password(password: str) -> str:
     return generate_password_hash(password, method="pbkdf2:sha256:600000")
 
 
-def _login_session(user):
+def _login_session(user, remember=True):
     # Clear first so nothing from a prior (possibly anonymous) session survives
     # the privilege change.
     session.clear()
+    # Signup/Google always remember (no added friction over the old name-only
+    # login); plain email/password login respects the "Remember me" checkbox —
+    # unchecked falls back to a browser-session cookie, same as before.
+    session.permanent = remember
     session['user_id'] = user['id']
     session['user_name'] = user['name']
 
@@ -257,12 +263,13 @@ def login_page():
 def do_login():
     email = (request.form.get('email') or '').strip().lower()
     password = request.form.get('password') or ''
+    remember = bool(request.form.get('remember'))
     user = get_user_by_email(email) if email else None
     # Same generic error whether the email doesn't exist or the password is
     # wrong — don't let the form reveal which accounts exist.
     if not user or not user.get('password_hash') or not check_password_hash(user['password_hash'], password):
         return render_template("login.html", google_enabled=bool(google_oauth), error="Invalid email or password."), 401
-    _login_session(user)
+    _login_session(user, remember=remember)
     return redirect(url_for('index'))
 
 

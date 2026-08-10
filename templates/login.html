@@ -148,6 +148,23 @@
       opacity: 0.15;
     }
 
+    .remember-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 4px 0 18px;
+      font-size: 0.85rem;
+      color: var(--muted);
+      cursor: pointer;
+      user-select: none;
+    }
+    .remember-row input {
+      width: 16px;
+      height: 16px;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+
     .hint {
       font-size: 0.85rem;
       color: var(--muted);
@@ -186,6 +203,10 @@
     <input type="email" name="email" placeholder="you@example.com" autocomplete="email" autofocus required>
     <label>Password</label>
     <input type="password" name="password" placeholder="••••••••" autocomplete="current-password" required>
+    <label class="remember-row">
+      <input type="checkbox" name="remember" checked>
+      Remember me for 30 days
+    </label>
     <button type="submit" class="btn-primary">Log in</button>
   </form>
 
