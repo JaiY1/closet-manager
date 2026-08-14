@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-## Project: Closet Manager (V1 + V2 shopping + V3 AI photo + V4 deploy-prep — complete)
+## Project: Closet Manager (V1 + V2 shopping + V3 AI photo + V4 deploy-prep + V5 auth & observability — complete)
 
 Personal wardrobe app built with Flask + Claude API. Third project in this repo alongside `news-aggregator/` and `nba-tool/`. Follow the same conventions (Flask, SQLite via `database.py`, templates with vanilla JS, "POP" light theme — cream paper, tangerine accent, bold black outlines).
 
@@ -38,18 +38,29 @@ All image-pipeline improvements are behind **feature flags in `config.py`** (env
 - **PWA** — installable: `static/manifest.json`, `static/sw.js` (served from `/sw.js`, scope `/`, static-only caching — never caches renders/API), on-brand icons, head tags on every page. Camera works on mobile via existing `accept="image/*"` inputs.
 - **`DATA_DIR`** (config.py) — all mutable data (DB, ChromaDB, `uploads/`, caches) lives under one dir; defaults to project root (local unchanged), set `DATA_DIR=/data` (mounted volume) in prod so redeploys don't wipe data. `uploads/` moved out of `static/` and auto-migrated on first run; still served at `/static/uploads/...` via the `serve_upload` override route (so no template/URL churn).
 
+### What's built (V5 — real auth, admin tooling, observability)
+- **Real per-user auth — live in prod.** Email/password signup+login (PBKDF2-SHA256, `app.py: _hash_password`), "Sign in with Google" (Authlib/OIDC, hidden until `GOOGLE_CLIENT_ID`/`SECRET` are set), forgot/reset password via Resend (logs the link instead of emailing if `RESEND_API_KEY` is unset), and a forced "secure your account" prompt for old name-only accounts (`users.auth_provider == 'legacy'`). The old shared `ACCESS_CODE` login gate is gone — that var now only gates the admin routes below. Google callback disambiguates a display-name collision (`"Name (email-prefix)"`, then a random suffix) instead of 500ing, since unlike the signup form there's no field to fix Google's name before account creation.
+- **Photo-import cutouts run in parallel**, not sequentially — `_run_photo_analyze_job`'s eager-cutout loop (the default path) fires up to `_CUTOUT_MAX_WORKERS=4` concurrent Gemini calls (ThreadPoolExecutor) instead of one at a time, since each is I/O-bound. A multi-garment photo now takes roughly as long as *one* Gemini call, not the sum of all of them.
+- **"Add from a product link"** (`link_import.py`, new file) — paste a product URL on the add-garment page instead of uploading a photo. Scrapes `og:image`/title/price (schema.org JSON-LD first, then meta tags), has an SSRF guard (rejects private/loopback IPs, re-checked on every redirect hop) since it fetches whatever URL a logged-in user pastes, and runs the fetched photo through the *same* `reconstruct_garment` Gemini isolation as photo-import — the raw scraped image is often a model wearing the whole outfit, not an isolated shot of just this item, so it needs the same treatment. Runs as a background job (`/garments/from-link` + `/garments/from-link/<job_id>/status`), same polling pattern as photo-import.
+- **Uploaded/generated images are cached hard by the browser** — `serve_upload()` sets `Cache-Control: private, max-age=31536000, immutable`. Safe because every write goes through `_unique_name()` (timestamp+uuid), so no file under `uploads/` is ever overwritten in place.
+- **ChromaDB's ONNX model cache now persists across redeploys.** It used to live in `~/.cache` (the container's ephemeral filesystem on Railway), forcing a fresh ~79MB download on every redeploy; two concurrent first-use requests racing on that download crashed with `FileNotFoundError`. `config.py` now points `HOME` at `DATA_DIR` (skipped under the test suite via `CLOSET_MANAGER_TESTING`, or it'd force a full re-download every test run), and `vector_store.warm_up()` (called once at app startup, alongside `init_db()`) forces the model to load synchronously before any request threads start, closing the race window even on a genuinely fresh volume.
+- **Every 500 gets recorded to a DB table**, not just Railway's live console logs — `error_log`, written via both `errorhandler(500)` (full traceback, for genuinely unhandled exceptions) and an `after_request` catch-all (no traceback, but catches the ~15 routes that manually catch their own exception and return `(jsonify(...), 500)`, which never reach `errorhandler`). The three background job runners (photo-analyze, link-import, tryon) log explicitly too, since they never produce an HTTP response at all. View at `/admin/errors`.
+- **Every real (non-cached) Gemini call's timing gets recorded** — `gemini_timing`, written from `imagegen.py` itself (`reconstruct_garment`, `tryon`), including whether `CUTOUT_RETRY`'s second full Gemini call fired (roughly doubles latency for whatever fraction of cutouts trigger it). View at `/admin/timing`. Real measurements so far: single cutout calls land around 9-10s — that's essentially all Gemini's own model inference/network round-trip, not our pre/post-processing (resize, chroma-key are local numpy/PIL work, milliseconds) — so it isn't something further code changes can meaningfully cut; the parallelization above is the real lever we have (wall-clock time for a multi-garment photo, not any single call's latency).
+- **One-off admin routes** (all `ACCESS_CODE`-gated, same pattern as the pre-existing `/admin/import-data`): `GET /admin/list-users` (counts per user), `POST /admin/merge-user` (moves garments/outfits/calendar/wishlist/usage-history/style-profile/body-photo from one account to another — built for consolidating a legacy name-only account onto a newly-linked Google/email account), `GET /admin/errors`, `GET /admin/timing`. **`ACCESS_CODE` is currently unset on Railway** (removed at some point after the account-merge work was done) — these routes 403 until it's re-added as a Railway env var.
+
 ### Key files
 | File | Role |
 |------|------|
 | `app.py` | Flask routes, runs on port 5002 |
 | `config.py` | Keys + `DATA_DIR` + all image-pipeline feature flags and cost caps (env-overridable) |
-| `database.py` | SQLite (`$DATA_DIR/closet.db`): users (+`body_photo_path`), garments, garment_images, outfits, outfit_items, outfit_logs, style_profile, wishlist_items, image_events, tryon_history. Auto-migrates on init |
+| `database.py` | SQLite (`$DATA_DIR/closet.db`): users (+`body_photo_path`, auth columns), garments, garment_images, outfits, outfit_items, outfit_logs, style_profile, wishlist_items, image_events, tryon_history, `error_log`, `gemini_timing`. Auto-migrates on init |
+| `link_import.py` | Scrapes a product URL for its photo/title/price for "add from a link" — `fetch_product_page()`, SSRF-guarded |
 | `vector_store.py` | ChromaDB wrapper — `embed_garment`, `search_garments`, `delete_garment` |
 | `agents.py` | `run_coordinator`, `suggest_outfit`, `refresh_style_profile`, `shopper_agent`, `identify_wardrobe_gaps` |
 | `vision.py` | `autotag_garment`, `autotag_label`, `detect_garments_in_photo`, `check_body_photo` — Claude Haiku Vision, returns JSON |
 | `imagegen.py` | Gemini image layer — `reconstruct_garment` (+cache/retry/force), `chroma_key_to_png`, `tryon`, `remove_bg` (rembg). Lazy clients so the app boots without keys |
 | `shopping.py` | `search_shopping` — Serper Google Shopping API wrapper, price parsing/filtering |
-| `templates/` | base.html (POP light theme, tangerine accent #e8590c) + PWA tags, index, add, add_photo, edit, outfit, calendar, ask, shop, login |
+| `templates/` | base.html (POP light theme, tangerine accent #e8590c) + PWA tags, index, add, add_photo, edit, outfit, calendar, ask, shop, login, signup, forgot_password, reset_password, secure_account, admin_errors, admin_timing (the last two standalone, not extending base.html — `ACCESS_CODE`-gated, not session-gated) |
 
 ### Models used
 - `claude-haiku-4-5` — outfit suggestions, coordinator, auto-tagging, garment detection, shopper scoring, gap detection (cost-sensitive)
@@ -65,13 +76,17 @@ python app.py          # http://localhost:5002
 GEMINI_API_KEY is optional — without it the app runs fine and the photo-import / try-on routes return a clean 503. The image model requires a **billing-enabled** Google Cloud project (not free tier). Set `DATA_DIR=/data` (a mounted volume) for production so redeploys don't wipe data; it defaults to the project root locally.
 
 ### What's next
-- **Real auth is scaffolded, not fully live** (2026-07-21) — email/password signup + login, "Sign in with Google" (OIDC via Authlib), forgot/reset password (Resend), and a one-time "secure your account" prompt for the old name-only users all exist in `app.py`/`database.py`/`templates/`. Signup is intentionally open (no email verification, no ACCESS_CODE gate). **Not yet wired to real credentials** — `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` and `RESEND_API_KEY` are unset, so Google sign-in is hidden and password-reset links are only logged, not emailed. Set those env vars (locally + Railway) to go live.
-- Parallelize the sequential Gemini cutout calls (a multi-garment import is ~1 min)
+- **Re-add `ACCESS_CODE` on Railway** if you want the admin routes (`/admin/list-users`, `/admin/merge-user`, `/admin/errors`, `/admin/timing`, `/admin/import-data`) usable again — it was removed at some point and they currently 403.
+- **`RESEND_API_KEY` still unset** — password-reset links just log via `logger.info` instead of emailing. Matters once people besides you might lock themselves out.
+- Front/back / multi-view "see the garment in the round" feature — deferred, waiting on a clearer description of the intended UX before building anything (two rough mockups exist: front/back flip vs. 4-view turntable, but neither matched the original vision).
 - Retailer affiliate links on shopping results; deeper calendar analytics (wear streaks, cost-per-wear)
+- The cutout-generation parallelization only covers the default eager path (`OPTIN_CUTOUTS=False`) — the opt-in confirm-path loop (`add_photo_confirm`) is still sequential. Not worth doing unless that mode gets used.
 
 ---
 
 ## Testing Status
+
+**Current source of truth: `tests/test_security.py`, run with `python3 -m pytest -q`** — 55 automated tests as of 2026-08-14 (auth flows, cross-user isolation, upload safety, background jobs, admin routes, error/timing logging, link-import's SSRF guard). The phase-by-phase log below is the original manual verification pass from the initial build and is historical — real, but no longer the primary signal of what's covered.
 
 ### Phase 1 — Backend & Routes (COMPLETE, done without API key)
 
