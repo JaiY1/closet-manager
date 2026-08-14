@@ -12,17 +12,37 @@ _CHROMA_DIR.mkdir(exist_ok=True)
 _collection = None
 
 
+_embedding_function = None
+
+
 def _get_collection():
-    global _collection
+    global _collection, _embedding_function
     if _collection is None:
-        ef = ONNXMiniLM_L6_V2()
+        _embedding_function = ONNXMiniLM_L6_V2()
         client = chromadb.PersistentClient(path=str(_CHROMA_DIR))
         _collection = client.get_or_create_collection(
             name="garments",
-            embedding_function=ef,
+            embedding_function=_embedding_function,
             metadata={"hnsw:space": "cosine"}
         )
     return _collection
+
+
+def warm_up():
+    """Force the ONNX model to load — and download, if not already cached —
+    once, synchronously, at app startup, before gunicorn's worker threads
+    start serving real requests. Otherwise the model only downloads lazily on
+    the first real embed/search call, and if two of gunicorn's threads both
+    hit that cold path around the same moment, they race on writing the same
+    cache file and one crashes. Constructing the collection alone doesn't
+    trigger the download — only an actual embedding call does — so this runs
+    one on a throwaway string. Failure here is non-fatal (falls back to the
+    same lazy behavior as before this existed); it must never block startup."""
+    try:
+        _get_collection()
+        _embedding_function(["warm up"])
+    except Exception:
+        pass
 
 
 def _garment_doc(garment: dict) -> str:

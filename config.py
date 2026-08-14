@@ -15,6 +15,23 @@ SECRET_KEY = os.getenv("SECRET_KEY")
 DATA_DIR = Path(os.getenv("DATA_DIR") or Path(__file__).resolve().parent).resolve()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+# ChromaDB's ONNX embedding model caches to ~/.cache (Path.home()), which on
+# Railway is the container's ephemeral filesystem, not the DATA_DIR volume —
+# every redeploy wipes it, forcing a fresh ~79MB download on the next embed
+# call. Worse, if two requests both trigger that cold download around the same
+# moment (concurrent gthread requests), they race on the same file and one
+# crashes with FileNotFoundError mid-verify. Point HOME at DATA_DIR so this
+# (and anything else that follows the same convention) persists across
+# restarts and only ever downloads once. Must happen before anything imports
+# chromadb — its DOWNLOAD_PATH is a class attribute evaluated at import time —
+# so this sits here, in the module every other module imports first.
+# Skipped under the test suite (conftest.py sets CLOSET_MANAGER_TESTING) —
+# DATA_DIR there is a fresh throwaway tempdir every run, so this would force a
+# full re-download on every single test run instead of reusing whatever's
+# already cached under the real machine's actual home directory.
+if not os.getenv("CLOSET_MANAGER_TESTING"):
+    os.environ["HOME"] = str(DATA_DIR)
+
 
 # --- Image-pipeline feature flags -------------------------------------------
 # Each flag toggles one accuracy or cost improvement. Set to False (here or via

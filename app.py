@@ -43,7 +43,7 @@ from database import (
     NameTaken, EmailTaken,
     list_users_with_counts, merge_user_data, UserNotFound,
 )
-from vector_store import embed_garment, delete_garment as vs_delete
+from vector_store import embed_garment, delete_garment as vs_delete, warm_up as warm_up_vector_store
 from agents import (
     run_coordinator, suggest_outfit, refresh_style_profile, detect_outfit_rag,
     shopper_agent, identify_wardrobe_gaps, invalidate_gaps_cache
@@ -146,6 +146,13 @@ def _migrate_uploads():
 _migrate_uploads()
 
 init_db()
+
+# Force the ONNX embedding model to load (downloading it if not already
+# cached) here, single-threaded, before gunicorn's worker threads start
+# serving real requests — see vector_store.warm_up() for why: concurrent
+# first-use requests racing on that same cold download is what crashed
+# /garments with a FileNotFoundError.
+warm_up_vector_store()
 
 
 def _unique_name(prefix: str, ext: str) -> str:

@@ -7,6 +7,12 @@ import tempfile
 # import time.
 os.environ["DATA_DIR"] = tempfile.mkdtemp(prefix="closet-test-")
 os.environ.pop("ACCESS_CODE", None)
+# Tell config.py not to redirect HOME at that throwaway dir (it normally does,
+# in production, so ChromaDB's ONNX model cache survives redeploys instead of
+# re-downloading ~79MB from an ephemeral filesystem every time) — here it
+# would force a full fresh download+extract on every single test run instead
+# of reusing whatever's already cached under the real dev machine's ~/.cache.
+os.environ["CLOSET_MANAGER_TESTING"] = "1"
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
