@@ -404,7 +404,22 @@ def google_callback():
                 "login.html", google_enabled=True,
                 error="An account with this email already exists. Log in and link Google from your account."
             ), 409
-        user = create_user_google(name, email, sub)
+        try:
+            user = create_user_google(name, email, sub)
+        except NameTaken:
+            # Unlike the signup form, there's no field for the user to fix a
+            # colliding display name before account creation — Google's `name`
+            # claim isn't guaranteed unique across our users. Disambiguate
+            # instead of 500ing.
+            try:
+                user = create_user_google(f"{name} ({email.split('@')[0]})", email, sub)
+            except NameTaken:
+                user = create_user_google(f"{name} ({generate_token(4)})", email, sub)
+        except EmailTaken:
+            return render_template(
+                "login.html", google_enabled=True,
+                error="An account with this email already exists. Log in and link Google from your account."
+            ), 409
     _login_session(user)
     return redirect(url_for('index'))
 

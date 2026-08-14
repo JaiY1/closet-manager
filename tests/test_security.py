@@ -126,6 +126,39 @@ def test_reset_password_flow_end_to_end(client, app_module):
     assert r2.status_code == 302
 
 
+# --- Google sign-in ---
+
+def test_google_signin_disambiguates_colliding_display_name(client, app_module, monkeypatch):
+    # Regression: create_user_google() used to be called with no try/except in
+    # google_callback's fresh-signup branch — a Google account whose display
+    # name collided (case-insensitively) with an existing user's name raised
+    # NameTaken uncaught, 500ing instead of just creating the account under a
+    # disambiguated name (the user has no form field to fix Google's name).
+    client.post("/signup", data={
+        "name": "Name Collision User", "email": "original-owner@example.com", "password": "correct-horse-battery",
+    })
+    client.get("/logout")
+
+    class FakeGoogleOAuth:
+        def authorize_access_token(self):
+            return {"id_token": "fake"}
+
+        def parse_id_token(self, token, nonce=None):
+            return {
+                "sub": "google-sub-collision-1", "email": "name-collision@example.com",
+                "email_verified": True, "name": "Name Collision User",
+            }
+
+    monkeypatch.setattr(app_module, "google_oauth", FakeGoogleOAuth())
+    r = client.get("/auth/google/callback", follow_redirects=False)
+    assert r.status_code == 302 and "/login" not in r.headers["Location"]
+
+    new_user = app_module.get_user_by_email("name-collision@example.com")
+    assert new_user is not None
+    assert new_user["name"] != "Name Collision User"  # disambiguated, not a collision
+    assert new_user["name"].startswith("Name Collision User (")
+
+
 # --- Upload helpers ---
 
 def test_safe_ext_whitelist(app_module):
