@@ -159,6 +159,50 @@ def test_google_signin_disambiguates_colliding_display_name(client, app_module, 
     assert new_user["name"].startswith("Name Collision User (")
 
 
+# --- Admin: merge one account's data onto another ---
+
+def test_admin_merge_user_requires_correct_code(client, app_module, monkeypatch):
+    monkeypatch.setattr(app_module, "ACCESS_CODE", "correct-code")
+    r = client.post("/admin/merge-user", data={"code": "wrong-code", "from_user_id": "1", "to_user_id": "2"})
+    assert r.status_code == 403
+
+
+def test_admin_merge_user_moves_wardrobe_data(client, app_module, monkeypatch):
+    monkeypatch.setattr(app_module, "ACCESS_CODE", "correct-code")
+    from database import (
+        add_garment, add_outfit, log_outfit, save_style_profile, add_wishlist_item,
+        add_tryon_history, set_body_photo, get_all_garments, get_style_profile,
+        get_wishlist_items, get_tryon_history, get_calendar, get_user,
+    )
+
+    old = app_module.create_user_password("Old Name User", "old-name-user@example.com", "x")
+    new = app_module.create_user_password("New Name User", "new-name-user@example.com", "x")
+
+    add_garment(old["id"], "Test Jacket", "jacket", "navy", "", "", "", [], "", "")
+    outfit_id = add_outfit(old["id"], "Test Outfit", "casual", 5, "", [])
+    log_outfit(old["id"], "2026-08-01", outfit_id, [], "")
+    save_style_profile(old["id"], "Old user's style summary.")
+    add_wishlist_item(old["id"], "Test Item", "$10", "Test Store", "http://example.com/x", "", "", "")
+    add_tryon_history(old["id"], "uploads/fake.png", [])
+    set_body_photo(old["id"], "uploads/fake-body.png")
+
+    r = client.post("/admin/merge-user", data={
+        "code": "correct-code", "from_user_id": str(old["id"]), "to_user_id": str(new["id"]),
+    })
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    assert body["moved"]["garments"] == 1
+
+    assert len(get_all_garments(new["id"])) == 1
+    assert len(get_all_garments(old["id"])) == 0
+    assert get_style_profile(new["id"])["summary"] == "Old user's style summary."
+    assert len(get_wishlist_items(new["id"])) == 1
+    assert len(get_tryon_history(new["id"])) == 1
+    assert len(get_calendar(new["id"])) == 1
+    assert get_user(new["id"])["body_photo_path"] == "uploads/fake-body.png"
+
+
 # --- Upload helpers ---
 
 def test_safe_ext_whitelist(app_module):

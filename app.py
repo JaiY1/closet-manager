@@ -40,6 +40,7 @@ from database import (
     get_user_by_email, get_user_by_google_sub, create_user_password, create_user_google,
     set_user_password, set_user_email_and_password, link_google_to_user,
     NameTaken, EmailTaken,
+    list_users_with_counts, merge_user_data, UserNotFound,
 )
 from vector_store import embed_garment, delete_garment as vs_delete
 from agents import (
@@ -202,6 +203,7 @@ _PUBLIC_ENDPOINTS = {
     'reset_password_page', 'do_reset_password',
     'google_login', 'google_callback',
     'static', 'service_worker', 'healthz', 'admin_import_data',
+    'admin_list_users', 'admin_merge_user',
 }
 # Endpoints a logged-in-but-not-yet-secured (legacy) account may still reach,
 # so the "secure your account" prompt itself and logout aren't a redirect loop.
@@ -550,6 +552,57 @@ def admin_import_data():
         "extracted_count": extracted_count,
         "note": "Restart the app service now so the DB/vector-index pick up the new data.",
     })
+
+
+# --- One-off: move one account's wardrobe onto another account ---
+# For the case where a legacy name-only account's real wardrobe needs to land
+# on a freshly-created email/Google account instead of staying stranded on the
+# old one (e.g. signed up fresh instead of linking Google from /secure-account).
+# Same ACCESS_CODE gate as /admin/import-data, same reasoning: no shell into
+# the Railway container, so this is the only way to touch the live DB.
+
+@app.route("/admin/list-users")
+def admin_list_users():
+    """Usage: curl "<url>/admin/list-users?code=<ACCESS_CODE>" — find the
+    from/to user IDs before calling /admin/merge-user."""
+    if not ACCESS_CODE:
+        return jsonify({"error": "ACCESS_CODE is not configured — refusing to run unguarded."}), 403
+    if (request.args.get('code') or '') != ACCESS_CODE:
+        return jsonify({"error": "Invalid or missing access code."}), 403
+    return jsonify({"users": list_users_with_counts()})
+
+
+@app.route("/admin/merge-user", methods=["POST"])
+def admin_merge_user():
+    """Usage: curl -X POST -d "code=<ACCESS_CODE>" -d "from_user_id=1" -d "to_user_id=3"
+    <url>/admin/merge-user
+    Moves garments/outfits/calendar/wishlist/usage-history/style-profile/body-photo
+    from from_user_id onto to_user_id. Source account is left in place, now empty."""
+    if not ACCESS_CODE:
+        return jsonify({"error": "ACCESS_CODE is not configured — refusing to run unguarded."}), 403
+    if (request.form.get('code') or '') != ACCESS_CODE:
+        return jsonify({"error": "Invalid or missing access code."}), 403
+    try:
+        from_id = int(request.form.get('from_user_id', ''))
+        to_id = int(request.form.get('to_user_id', ''))
+    except ValueError:
+        return jsonify({"error": "from_user_id and to_user_id must be integers."}), 400
+
+    try:
+        moved = merge_user_data(from_id, to_id)
+    except UserNotFound:
+        return jsonify({"error": "from_user_id or to_user_id doesn't exist."}), 404
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    # Vector-store search/RAG filters by user_id in its metadata — re-embed
+    # each moved garment now that its SQL row points at the destination
+    # account, or semantic search on the destination account finds nothing.
+    for g in get_all_garments(to_id):
+        embed_garment(g)
+
+    logger.info("Admin merge: moved user %s's data onto user %s: %s", from_id, to_id, moved)
+    return jsonify({"ok": True, "moved": moved})
 
 
 @app.route("/sw.js")

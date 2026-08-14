@@ -18,6 +18,10 @@ class EmailTaken(Exception):
     """Raised when a signup/email-link collides with an existing user's email."""
 
 
+class UserNotFound(Exception):
+    """Raised by merge_user_data() when from_user_id or to_user_id doesn't exist."""
+
+
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -256,6 +260,93 @@ def get_user(user_id: int) -> Optional[dict]:
     row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+def list_users_with_counts() -> List[dict]:
+    """Admin diagnostic for the one-off account-merge flow (see merge_user_data)
+    — every user with a quick count of what they own, so the right from/to IDs
+    can be identified before merging."""
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT u.id, u.name, u.email, u.auth_provider, u.created_at,
+               (SELECT COUNT(*) FROM garments      WHERE user_id = u.id) AS garments,
+               (SELECT COUNT(*) FROM outfits       WHERE user_id = u.id) AS outfits,
+               (SELECT COUNT(*) FROM outfit_logs   WHERE user_id = u.id) AS outfit_logs,
+               (SELECT COUNT(*) FROM wishlist_items WHERE user_id = u.id) AS wishlist_items,
+               (SELECT COUNT(*) FROM tryon_history  WHERE user_id = u.id) AS tryon_history
+        FROM users u ORDER BY u.id
+    """).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def merge_user_data(from_user_id: int, to_user_id: int) -> dict:
+    """Move all wardrobe data (garments, outfits, calendar logs, wishlist,
+    usage history, style profile, body photo) from one account onto another.
+    For the case where a legacy name-only account's real data needs to land on
+    a freshly-created email/Google account instead of staying stranded on the
+    old one. The source user row is left in place, now empty — not deleted.
+    Caller is responsible for re-embedding any moved garments in the vector
+    store afterward (this function only touches SQLite)."""
+    if from_user_id == to_user_id:
+        raise ValueError("from_user_id and to_user_id must differ")
+    conn = get_db()
+    from_row = conn.execute("SELECT * FROM users WHERE id = ?", (from_user_id,)).fetchone()
+    to_row = conn.execute("SELECT * FROM users WHERE id = ?", (to_user_id,)).fetchone()
+    if not from_row or not to_row:
+        conn.close()
+        raise UserNotFound()
+
+    moved = {}
+    try:
+        for table in ("garments", "outfits", "wishlist_items", "image_events", "tryon_history"):
+            cur = conn.execute(f"UPDATE {table} SET user_id = ? WHERE user_id = ?", (to_user_id, from_user_id))
+            moved[table] = cur.rowcount
+
+        # outfit_logs has UNIQUE(user_id, date) — move what doesn't collide
+        # with a log the destination already has on that date, skip (don't
+        # lose) the rest.
+        logs = conn.execute("SELECT id, date FROM outfit_logs WHERE user_id = ?", (from_user_id,)).fetchall()
+        moved_logs, skipped_dates = 0, []
+        for log in logs:
+            collision = conn.execute(
+                "SELECT 1 FROM outfit_logs WHERE user_id = ? AND date = ?", (to_user_id, log["date"])
+            ).fetchone()
+            if collision:
+                skipped_dates.append(log["date"])
+                continue
+            conn.execute("UPDATE outfit_logs SET user_id = ? WHERE id = ?", (to_user_id, log["id"]))
+            moved_logs += 1
+        moved["outfit_logs"] = moved_logs
+        if skipped_dates:
+            moved["outfit_logs_skipped_dates"] = skipped_dates
+
+        # style_profile: user_id is the PRIMARY KEY, so the destination can only
+        # end up with one row. Move the source's only if the destination
+        # doesn't already have one; otherwise keep the destination's.
+        to_has_profile = conn.execute("SELECT 1 FROM style_profile WHERE user_id = ?", (to_user_id,)).fetchone()
+        if to_has_profile:
+            conn.execute("DELETE FROM style_profile WHERE user_id = ?", (from_user_id,))
+            moved["style_profile"] = "destination already had one — kept it, discarded source's"
+        else:
+            cur = conn.execute("UPDATE style_profile SET user_id = ? WHERE user_id = ?", (to_user_id, from_user_id))
+            moved["style_profile"] = bool(cur.rowcount)
+
+        # body_photo_path lives on the users row itself — only copy it over if
+        # the destination doesn't already have one.
+        if not to_row["body_photo_path"] and from_row["body_photo_path"]:
+            conn.execute("UPDATE users SET body_photo_path = ? WHERE id = ?", (from_row["body_photo_path"], to_user_id))
+            moved["body_photo_path"] = True
+        else:
+            moved["body_photo_path"] = False
+
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return moved
 
 
 def get_or_create_user(name: str) -> dict:
