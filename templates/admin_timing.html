@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Closet — Gemini Timing</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'IBM Plex Mono', 'SF Mono', Menlo, monospace;
+      background: #1a1a1a; color: #e8e8e8;
+      margin: 0; padding: 24px; font-size: 13px;
+    }
+    h1 { font-size: 1.1rem; margin: 0 0 4px; color: #fff; }
+    h2 { font-size: 0.9rem; margin: 24px 0 8px; color: #ccc; }
+    .sub { color: #888; margin-bottom: 20px; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 8px; }
+    th, td { text-align: left; padding: 6px 12px; border-bottom: 1px solid #333; }
+    th { color: #888; font-weight: normal; }
+    td.kind { color: #6ec1ff; }
+    td.retry-hot { color: #e8590c; }
+    .empty { color: #888; padding: 20px 0; }
+  </style>
+</head>
+<body>
+  <h1>Gemini Call Timing</h1>
+  <div class="sub">Every real (non-cached) call, since this table started collecting data.</div>
+
+  <h2>Summary by kind</h2>
+  {% if not by_kind %}
+    <div class="empty">No data yet — nothing's been generated since this shipped.</div>
+  {% else %}
+  <table>
+    <tr><th>kind</th><th>count</th><th>avg</th><th>min</th><th>max</th><th>retry %</th></tr>
+    {% for row in by_kind %}
+    <tr>
+      <td class="kind">{{ row.kind }}</td>
+      <td>{{ row.count }}</td>
+      <td>{{ row.avg_ms }} ms</td>
+      <td>{{ row.min_ms }} ms</td>
+      <td>{{ row.max_ms }} ms</td>
+      <td class="{{ 'retry-hot' if row.retry_pct and row.retry_pct > 15 else '' }}">{{ row.retry_pct }}%</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  <h2>Most recent 20</h2>
+  {% if not recent %}
+    <div class="empty">—</div>
+  {% else %}
+  <table>
+    <tr><th>time</th><th>kind</th><th>duration</th><th>retried</th></tr>
+    {% for r in recent %}
+    <tr>
+      <td>{{ r.created_at }}</td>
+      <td class="kind">{{ r.kind }}</td>
+      <td>{{ r.duration_ms }} ms</td>
+      <td>{{ 'yes' if r.retried else '' }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+</body>
+</html>

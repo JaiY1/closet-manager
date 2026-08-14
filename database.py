@@ -129,6 +129,32 @@ def init_db():
             garment_ids TEXT DEFAULT '[]',
             created_at  TEXT DEFAULT (datetime('now'))
         );
+
+        -- Every 500 (request-cycle or background-job) gets a row here, so bugs
+        -- hit by other users are visible without watching Railway's live
+        -- console logs — see app.py's after_request/errorhandler(500) hooks
+        -- and the background job runners' except blocks.
+        CREATE TABLE IF NOT EXISTS error_log (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            occurred_at   TEXT DEFAULT (datetime('now')),
+            user_id       INTEGER,
+            endpoint      TEXT DEFAULT '',
+            error_type    TEXT DEFAULT '',
+            error_message TEXT DEFAULT '',
+            traceback     TEXT DEFAULT ''
+        );
+
+        -- One row per real (non-cached) Gemini image call — how long it
+        -- actually took and whether the cutout retry fired. Written from
+        -- imagegen.py itself (reconstruct_garment/tryon), not app.py, so every
+        -- caller gets this for free with no per-call-site plumbing.
+        CREATE TABLE IF NOT EXISTS gemini_timing (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at  TEXT DEFAULT (datetime('now')),
+            kind        TEXT DEFAULT 'cutout',
+            duration_ms INTEGER DEFAULT 0,
+            retried     INTEGER DEFAULT 0
+        );
     """)
     conn.commit()
 
@@ -881,3 +907,72 @@ def get_tryon_history(user_id: int, limit: int = 12) -> list:
             d["garment_ids"] = []
         out.append(d)
     return out
+
+
+_ERROR_LOG_CAP = 1000  # keep growth bounded — a bug that errors on every request shouldn't fill the disk
+
+
+def log_error(endpoint: str, error_type: str, error_message: str, traceback: str = "", user_id=None):
+    """Record a 500 (or background-job failure) so it's visible without
+    watching Railway's live console — see app.py's after_request/
+    errorhandler(500) hooks and the background job runners. Caller's
+    responsibility to catch their own exceptions around this call; a failure
+    here must never be allowed to break whatever was already failing."""
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO error_log (user_id, endpoint, error_type, error_message, traceback) VALUES (?, ?, ?, ?, ?)",
+        (user_id, endpoint, error_type, (error_message or "")[:2000], traceback)
+    )
+    conn.execute(
+        "DELETE FROM error_log WHERE id NOT IN (SELECT id FROM error_log ORDER BY id DESC LIMIT ?)",
+        (_ERROR_LOG_CAP,)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_recent_errors(limit: int = 100) -> list:
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM error_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+_GEMINI_TIMING_CAP = 2000  # keep growth bounded, same reasoning as error_log's cap
+
+
+def record_gemini_timing(kind: str, duration_ms: int, retried: bool = False):
+    """Called from imagegen.py itself after every real (non-cached) Gemini
+    call, so timing data doesn't need separate plumbing at each of
+    reconstruct_garment's several app.py call sites. Best-effort — a metrics
+    write must never be allowed to break the image generation it's timing."""
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO gemini_timing (kind, duration_ms, retried) VALUES (?, ?, ?)",
+        (kind, int(duration_ms), int(bool(retried)))
+    )
+    conn.execute(
+        "DELETE FROM gemini_timing WHERE id NOT IN (SELECT id FROM gemini_timing ORDER BY id DESC LIMIT ?)",
+        (_GEMINI_TIMING_CAP,)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_gemini_timing_summary() -> dict:
+    """Per-kind count/avg/min/max/retry-rate, plus the 20 most recent raw
+    samples for spot-checking outliers."""
+    conn = get_db()
+    by_kind = [dict(r) for r in conn.execute("""
+        SELECT kind, COUNT(*) AS count,
+               ROUND(AVG(duration_ms)) AS avg_ms,
+               MIN(duration_ms) AS min_ms,
+               MAX(duration_ms) AS max_ms,
+               ROUND(100.0 * SUM(retried) / COUNT(*), 1) AS retry_pct
+        FROM gemini_timing GROUP BY kind ORDER BY kind
+    """).fetchall()]
+    recent = [dict(r) for r in conn.execute(
+        "SELECT * FROM gemini_timing ORDER BY id DESC LIMIT 20"
+    ).fetchall()]
+    conn.close()
+    return {"by_kind": by_kind, "recent": recent}

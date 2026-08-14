@@ -11,6 +11,7 @@ still boots when GEMINI_API_KEY is unset (routes guard on the key and 503).
 """
 import base64
 import hashlib
+import time
 from io import BytesIO
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from PIL import Image
 from google import genai
 from google.genai import types
 
+from database import record_gemini_timing
 from config import (
     GEMINI_API_KEY, IDENTITY_PROMPT_V2, BODY_INPUT_MAXPX,
     CUTOUT_FIDELITY, CUTOUT_RETRY, CACHE_CUTOUTS, DATA_DIR,
@@ -228,11 +230,18 @@ def reconstruct_garment(photo_bytes: bytes, description: str, force: bool = Fals
         if cached is not None:
             return cached
 
+    t0 = time.time()
     png = _reconstruct_once(photo_bytes, description)
+    retried = False
     if CUTOUT_RETRY and not _cutout_ok(png):
+        retried = True
         retry = _reconstruct_once(photo_bytes, description)
         if _cutout_ok(retry):
             png = retry
+    try:
+        record_gemini_timing("cutout", int((time.time() - t0) * 1000), retried)
+    except Exception:
+        pass  # a metrics write must never break the actual generation
 
     _cache_put(key, png)
     return png
@@ -356,11 +365,17 @@ def tryon(body_bytes: bytes, garment_pngs, description: str) -> bytes:
         contents.append(types.Part.from_bytes(data=png, mime_type="image/png"))
     contents.append(prompt.format(description=description or "the selected garments"))
 
+    t0 = time.time()
     response = _get_client().models.generate_content(
         model=GEMINI_IMAGE_MODEL,
         contents=contents,
     )
-    return _extract_image(response)
+    result = _extract_image(response)
+    try:
+        record_gemini_timing("tryon", int((time.time() - t0) * 1000))
+    except Exception:
+        pass  # a metrics write must never break the actual generation
+    return result
 
 
 # --- Free local background removal (rembg) ----------------------------------

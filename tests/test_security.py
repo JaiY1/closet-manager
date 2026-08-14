@@ -418,6 +418,154 @@ def test_daily_user_cap_blocks(app_module):
     assert msg and "limit" in msg
 
 
+# --- Error log (500s recorded outside Railway's console logs) ---
+
+def test_log_error_and_get_recent_errors(app_module):
+    from database import log_error, get_recent_errors
+    log_error(endpoint="/test", error_type="ValueError", error_message="boom",
+              traceback="line 1\nline 2", user_id=1)
+    errors = get_recent_errors(limit=5)
+    assert errors[0]["endpoint"] == "/test"
+    assert errors[0]["error_type"] == "ValueError"
+    assert errors[0]["error_message"] == "boom"
+    assert errors[0]["traceback"] == "line 1\nline 2"
+    assert errors[0]["user_id"] == 1
+
+
+def test_server_error_handler_records_full_traceback(app_module):
+    # The errorhandler(500) path — genuinely unhandled exceptions — gets the
+    # full traceback, unlike the after_request catch-all below.
+    with app_module.app.test_request_context("/some/path"):
+        try:
+            raise ValueError("kaboom")
+        except ValueError as e:
+            app_module._server_error(e)
+    from database import get_recent_errors
+    errors = get_recent_errors(limit=1)
+    assert errors[0]["endpoint"] == "/some/path"
+    assert errors[0]["error_type"] == "ValueError"
+    assert "kaboom" in errors[0]["error_message"]
+    assert "ValueError" in errors[0]["traceback"]
+    assert "kaboom" in errors[0]["traceback"]
+
+
+def test_manual_500_response_gets_logged_via_after_request(app_module, logged_in, monkeypatch):
+    # Regression: a route that catches its own exception and manually returns
+    # (jsonify(...), 500) never reaches errorhandler(500) — no exception is
+    # propagating — so without the after_request catch-all these would go
+    # completely unrecorded.
+    c, uid = logged_in
+    monkeypatch.setattr(app_module, "ANTHROPIC_API_KEY", "fake")
+
+    def raise_error(photo_bytes):
+        raise RuntimeError("autotag exploded")
+
+    monkeypatch.setattr(app_module, "autotag_garment", raise_error)
+    r = c.post("/garments/autotag", data={'image': (BytesIO(b"fake"), 'x.jpg')},
+               content_type='multipart/form-data')
+    assert r.status_code == 500
+
+    from database import get_recent_errors
+    errors = get_recent_errors(limit=1)
+    assert errors[0]["endpoint"] == "/garments/autotag"
+    assert errors[0]["error_type"] == "HTTPError"
+    assert "autotag exploded" in errors[0]["error_message"]
+    assert errors[0]["traceback"] == ""  # no traceback available at this layer
+
+
+def test_admin_errors_requires_correct_code(client, app_module, monkeypatch):
+    monkeypatch.setattr(app_module, "ACCESS_CODE", "correct-code")
+    r = client.get("/admin/errors?code=wrong-code")
+    assert r.status_code == 403
+
+
+def test_admin_errors_json_view(client, app_module, monkeypatch):
+    from database import log_error
+    log_error(endpoint="/x", error_type="ValueError", error_message="findable error", traceback="", user_id=None)
+    monkeypatch.setattr(app_module, "ACCESS_CODE", "correct-code")
+    r = client.get("/admin/errors?code=correct-code&format=json")
+    assert r.status_code == 200
+    assert any(e["error_message"] == "findable error" for e in r.get_json()["errors"])
+
+
+def test_admin_errors_html_view(client, app_module, monkeypatch):
+    monkeypatch.setattr(app_module, "ACCESS_CODE", "correct-code")
+    r = client.get("/admin/errors?code=correct-code")
+    assert r.status_code == 200
+    assert b"Error Log" in r.data
+
+
+# --- Gemini call timing ---
+
+def test_reconstruct_garment_records_timing(app_module, monkeypatch):
+    # Exercises the real imagegen.reconstruct_garment, not a mock of it at the
+    # app layer — that would bypass the new instrumentation entirely.
+    import imagegen
+    monkeypatch.setattr(imagegen, "_cache_get", lambda key: None)
+    monkeypatch.setattr(imagegen, "_cache_put", lambda key, data: None)
+    monkeypatch.setattr(imagegen, "_reconstruct_once", lambda photo_bytes, desc: b"fake-png")
+    monkeypatch.setattr(imagegen, "_cutout_ok", lambda png: True)  # good on the first try — no retry
+    monkeypatch.setattr(imagegen, "CUTOUT_RETRY", True)
+
+    png = imagegen.reconstruct_garment(b"fake-photo-timing-1", "a shirt")
+    assert png == b"fake-png"
+
+    from database import get_gemini_timing_summary
+    summary = get_gemini_timing_summary()
+    assert any(row["kind"] == "cutout" for row in summary["by_kind"])
+    assert summary["recent"][0]["kind"] == "cutout"
+    assert summary["recent"][0]["retried"] == 0
+    assert summary["recent"][0]["duration_ms"] >= 0
+
+
+def test_reconstruct_garment_records_retry_flag(app_module, monkeypatch):
+    import imagegen
+    monkeypatch.setattr(imagegen, "_cache_get", lambda key: None)
+    monkeypatch.setattr(imagegen, "_cache_put", lambda key, data: None)
+    monkeypatch.setattr(imagegen, "_reconstruct_once", lambda photo_bytes, desc: b"fake-png")
+    monkeypatch.setattr(imagegen, "_cutout_ok", lambda png: False)  # always "bad" -> forces the retry path
+    monkeypatch.setattr(imagegen, "CUTOUT_RETRY", True)
+
+    imagegen.reconstruct_garment(b"fake-photo-timing-2", "pants")
+
+    from database import get_gemini_timing_summary
+    summary = get_gemini_timing_summary()
+    assert summary["recent"][0]["retried"] == 1
+
+
+def test_reconstruct_garment_cache_hit_skips_timing(app_module, monkeypatch):
+    import imagegen
+    monkeypatch.setattr(imagegen, "_cache_get", lambda key: b"cached-png")
+    called = []
+    monkeypatch.setattr(imagegen, "_reconstruct_once", lambda photo_bytes, desc: called.append(1))
+
+    png = imagegen.reconstruct_garment(b"fake-photo-timing-3", "shoes")
+    assert png == b"cached-png"
+    assert called == []  # never even attempted a real generation
+
+
+def test_admin_timing_requires_correct_code(client, app_module, monkeypatch):
+    monkeypatch.setattr(app_module, "ACCESS_CODE", "correct-code")
+    r = client.get("/admin/timing?code=wrong-code")
+    assert r.status_code == 403
+
+
+def test_admin_timing_json_view(client, app_module, monkeypatch):
+    from database import record_gemini_timing
+    record_gemini_timing("cutout", 5000, False)
+    monkeypatch.setattr(app_module, "ACCESS_CODE", "correct-code")
+    r = client.get("/admin/timing?code=correct-code&format=json")
+    assert r.status_code == 200
+    assert any(row["kind"] == "cutout" for row in r.get_json()["by_kind"])
+
+
+def test_admin_timing_html_view(client, app_module, monkeypatch):
+    monkeypatch.setattr(app_module, "ACCESS_CODE", "correct-code")
+    r = client.get("/admin/timing?code=correct-code")
+    assert r.status_code == 200
+    assert b"Gemini Call Timing" in r.data
+
+
 # --- Friendly Gemini errors ---
 
 def test_friendly_gemini_error_mapping(app_module):

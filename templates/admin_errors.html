@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Closet — Error Log</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'IBM Plex Mono', 'SF Mono', Menlo, monospace;
+      background: #1a1a1a; color: #e8e8e8;
+      margin: 0; padding: 24px; font-size: 13px;
+    }
+    h1 { font-size: 1.1rem; margin: 0 0 4px; color: #fff; }
+    .sub { color: #888; margin-bottom: 20px; }
+    .row {
+      border: 1px solid #333; border-radius: 6px; margin-bottom: 10px;
+      padding: 10px 14px; background: #222;
+    }
+    .row.oldest { opacity: 0.7; }
+    .meta { display: flex; gap: 16px; flex-wrap: wrap; color: #999; margin-bottom: 6px; }
+    .meta .time { color: #e8590c; }
+    .meta .endpoint { color: #6ec1ff; }
+    .msg { color: #fff; margin-bottom: 4px; word-break: break-word; }
+    details { margin-top: 6px; }
+    summary { cursor: pointer; color: #888; }
+    summary:hover { color: #ccc; }
+    pre {
+      white-space: pre-wrap; word-break: break-word; color: #ccc;
+      background: #161616; padding: 10px; border-radius: 4px; margin-top: 6px;
+      max-height: 400px; overflow-y: auto;
+    }
+    .empty { color: #888; padding: 40px 0; text-align: center; }
+  </style>
+</head>
+<body>
+  <h1>Error Log</h1>
+  <div class="sub">{{ errors|length }} most recent · newest first · capped at 1000 rows</div>
+
+  {% if not errors %}
+    <div class="empty">No errors recorded. 🎉</div>
+  {% endif %}
+
+  {% for e in errors %}
+    <div class="row">
+      <div class="meta">
+        <span class="time">{{ e.occurred_at }}</span>
+        <span class="endpoint">{{ e.endpoint }}</span>
+        <span>user_id: {{ e.user_id if e.user_id is not none else '—' }}</span>
+        <span>{{ e.error_type }}</span>
+      </div>
+      <div class="msg">{{ e.error_message }}</div>
+      {% if e.traceback %}
+      <details>
+        <summary>traceback</summary>
+        <pre>{{ e.traceback }}</pre>
+      </details>
+      {% endif %}
+    </div>
+  {% endfor %}
+</body>
+</html>

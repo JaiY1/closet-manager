@@ -7,6 +7,7 @@ import shutil
 import tarfile
 import threading
 import time
+import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
@@ -14,7 +15,7 @@ from io import BytesIO
 from pathlib import Path
 
 from PIL import Image
-from flask import Flask, request, jsonify, render_template, redirect, url_for, session, send_from_directory
+from flask import Flask, request, jsonify, render_template, redirect, url_for, session, send_from_directory, g
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import generate_password_hash, check_password_hash
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
@@ -42,6 +43,7 @@ from database import (
     set_user_password, set_user_email_and_password, link_google_to_user,
     NameTaken, EmailTaken,
     list_users_with_counts, merge_user_data, UserNotFound,
+    log_error, get_recent_errors, get_gemini_timing_summary,
 )
 from vector_store import embed_garment, delete_garment as vs_delete, warm_up as warm_up_vector_store
 from agents import (
@@ -107,11 +109,37 @@ def _not_found(e):
                            message="That page doesn't exist."), 404
 
 
+def _record_error(endpoint, error_type, error_message, tb="", user_id=None):
+    """Best-effort — logging a failure must never itself raise and mask the
+    original problem, so any exception here is swallowed."""
+    try:
+        log_error(endpoint=endpoint, error_type=error_type, error_message=str(error_message),
+                  traceback=tb, user_id=user_id)
+    except Exception:
+        logger.exception("Failed to record error to error_log (endpoint=%s)", endpoint)
+
+
 @app.errorhandler(500)
 def _server_error(e):
     logger.exception("Unhandled 500 on %s", request.path)
+    _record_error(request.path, type(e).__name__, str(e), traceback.format_exc(), session.get('user_id'))
+    g._error_already_logged = True
     return render_template("error.html", code=500,
                            message="Something went wrong on our end. Please try again."), 500
+
+
+@app.after_request
+def _log_any_500(response):
+    # Catch-all: a route that catches its own exception and manually returns
+    # (jsonify(...), 500) never reaches errorhandler(500) above (no exception
+    # is propagating), so without this those 500s would go unrecorded. No
+    # traceback available here — just endpoint + whatever error message the
+    # response carries — but that's still far better than nothing.
+    if response.status_code >= 500 and not getattr(g, '_error_already_logged', False):
+        body = response.get_json(silent=True) or {}
+        _record_error(request.path, "HTTPError", body.get('error') or response.status,
+                      user_id=session.get('user_id'))
+    return response
 
 
 @app.route("/healthz")
@@ -212,7 +240,7 @@ _PUBLIC_ENDPOINTS = {
     'reset_password_page', 'do_reset_password',
     'google_login', 'google_callback',
     'static', 'service_worker', 'healthz', 'admin_import_data',
-    'admin_list_users', 'admin_merge_user',
+    'admin_list_users', 'admin_merge_user', 'admin_errors', 'admin_timing',
 }
 # Endpoints a logged-in-but-not-yet-secured (legacy) account may still reach,
 # so the "secure your account" prompt itself and logout aren't a redirect loop.
@@ -614,6 +642,41 @@ def admin_merge_user():
     return jsonify({"ok": True, "moved": moved})
 
 
+@app.route("/admin/errors")
+def admin_errors():
+    """Usage: curl "<url>/admin/errors?code=<ACCESS_CODE>" (add &format=json for
+    raw JSON instead of the HTML view). Every 500 — request-cycle or
+    background-job — lands here via _record_error(), so bugs hit by other
+    users are visible without watching Railway's live console logs."""
+    if not ACCESS_CODE:
+        return jsonify({"error": "ACCESS_CODE is not configured — refusing to run unguarded."}), 403
+    if (request.args.get('code') or '') != ACCESS_CODE:
+        return jsonify({"error": "Invalid or missing access code."}), 403
+    try:
+        limit = min(int(request.args.get('limit', 200)), 1000)
+    except ValueError:
+        limit = 200
+    errors = get_recent_errors(limit=limit)
+    if request.args.get('format') == 'json':
+        return jsonify({"errors": errors})
+    return render_template("admin_errors.html", errors=errors)
+
+
+@app.route("/admin/timing")
+def admin_timing():
+    """Usage: curl "<url>/admin/timing?code=<ACCESS_CODE>" (add &format=json).
+    Per-kind Gemini call stats (count/avg/min/max/retry%) recorded by
+    imagegen.py on every real (non-cached) call — see record_gemini_timing()."""
+    if not ACCESS_CODE:
+        return jsonify({"error": "ACCESS_CODE is not configured — refusing to run unguarded."}), 403
+    if (request.args.get('code') or '') != ACCESS_CODE:
+        return jsonify({"error": "Invalid or missing access code."}), 403
+    summary = get_gemini_timing_summary()
+    if request.args.get('format') == 'json':
+        return jsonify(summary)
+    return render_template("admin_timing.html", **summary)
+
+
 @app.route("/sw.js")
 def service_worker():
     """Served from root so the service worker's scope covers the whole app."""
@@ -872,6 +935,7 @@ def _run_photo_analyze_job(job_id, uid, photo_bytes):
     try:
         detected = detect_garments_in_photo(photo_bytes)
     except Exception as e:
+        _record_error("/add/photo/analyze [detect]", type(e).__name__, e, traceback.format_exc(), uid)
         with _photo_jobs_lock:
             _photo_jobs[job_id].update(status="error", error=f"Detection failed: {e}")
         return
@@ -910,6 +974,7 @@ def _run_photo_analyze_job(job_id, uid, photo_bytes):
                 g['cutout_b64'] = base64.b64encode(png).decode('ascii')
             except Exception as e:
                 # One garment failing shouldn't sink the whole batch.
+                _record_error("/add/photo/analyze [cutout]", type(e).__name__, e, traceback.format_exc(), uid)
                 g['error'] = _friendly_gemini_error(e)
 
         if to_generate:
@@ -1264,6 +1329,7 @@ def _run_link_import_job(job_id, uid, url):
         if will_bill:
             record_image_event(uid, 'cutout')
     except Exception as e:
+        _record_error("/garments/from-link [reconstruct]", type(e).__name__, e, traceback.format_exc(), uid)
         with _link_jobs_lock:
             _link_jobs[job_id].update(status="error", error=_friendly_gemini_error(e))
         return
@@ -1336,6 +1402,7 @@ def _run_tryon_job(job_id, uid, body_bytes, pngs, names, key, garment_ids):
     try:
         result = tryon(body_bytes, pngs, ", ".join(names))
     except Exception as e:
+        _record_error("/suggest/tryon [job]", type(e).__name__, e, traceback.format_exc(), uid)
         with _tryon_jobs_lock:
             _tryon_jobs[job_id].update(status="error", error=_friendly_gemini_error(e))
         return
