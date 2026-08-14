@@ -244,16 +244,24 @@
     runAutotag(file);
   }
 
-  // Scrape a product URL for its photo + title/price, then feed the fetched
-  // image through the exact same preview/autotag pipeline as a normal file
-  // upload (handleImage below) — same base64-to-File trick as removeBgImage.
+  // Scrape a product URL, then isolate just that garment via Gemini server-side
+  // (the raw product photo is often a model wearing the whole outfit, not a
+  // clean shot of this one item) and feed the result through the exact same
+  // preview/autotag pipeline as a normal file upload (handleImage below) —
+  // same base64-to-File trick as removeBgImage. Runs as a background job +
+  // poll, same pattern as photo-import, since the Gemini call is ~8-15s and a
+  // backgrounded mobile tab would otherwise kill a single open fetch.
+  const LINK_POLL_MS = 1500;
+  let linkPollTimer = null;
+
   async function fetchFromLink() {
     const urlInput = document.getElementById('linkUrlInput');
     const url = urlInput.value.trim();
     if (!url) return;
     const btn = document.getElementById('linkFetchBtn');
     const status = document.getElementById('linkFetchStatus');
-    btn.disabled = true; status.textContent = 'Fetching product photo…';
+    btn.disabled = true;
+    status.textContent = 'Fetching product photo and isolating the item — this keeps running even if you switch tabs…';
 
     const fd = new FormData(); fd.append('url', url);
     try {
@@ -264,6 +272,43 @@
         btn.disabled = false;
         return;
       }
+      pollLinkJob(data.job_id);
+    } catch (e) {
+      status.textContent = '⚠️ Failed to fetch that link — try pasting a screenshot instead.';
+      btn.disabled = false;
+    }
+  }
+
+  function pollLinkJob(jobId) {
+    clearTimeout(linkPollTimer);
+    const status = document.getElementById('linkFetchStatus');
+    const btn = document.getElementById('linkFetchBtn');
+    const tick = async () => {
+      let data;
+      try {
+        const res = await fetch(`/garments/from-link/${jobId}/status`);
+        if (res.status === 404) {
+          status.textContent = '⚠️ That import expired or was not found. Try again.';
+          btn.disabled = false;
+          return;
+        }
+        data = await res.json();
+      } catch (e) {
+        // Transient blip (e.g. tab just came back from being backgrounded) —
+        // the job is still running server-side, so just retry.
+        linkPollTimer = setTimeout(tick, LINK_POLL_MS);
+        return;
+      }
+      if (data.status === 'running') {
+        linkPollTimer = setTimeout(tick, LINK_POLL_MS);
+        return;
+      }
+      btn.disabled = false;
+      if (data.status === 'error') {
+        status.textContent = '⚠️ ' + (data.error || 'Something went wrong.');
+        return;
+      }
+
       const bin = atob(data.image_b64);
       const arr = new Uint8Array(bin.length);
       for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
@@ -280,11 +325,9 @@
       }
 
       handleImage(input);  // shows the preview + runs autotag, same as a real upload
-      status.textContent = '✓ Fetched — review the pre-filled fields below.';
-    } catch (e) {
-      status.textContent = '⚠️ Failed to fetch that link — try pasting a screenshot instead.';
-    }
-    btn.disabled = false;
+      status.textContent = '✓ Isolated the item — review the pre-filled fields below.';
+    };
+    tick();
   }
 
   // G: free local background removal for a flat/product garment photo. Replaces

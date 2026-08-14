@@ -1225,26 +1225,87 @@ def set_body_photo_route():
     return jsonify({"path": rel, "url": f"/static/{rel}", "warning": warning})
 
 
+_link_jobs = {}
+_link_jobs_lock = threading.Lock()
+
+
+def _run_link_import_job(job_id, uid, url):
+    try:
+        scraped = fetch_product_page(url)
+    except LinkFetchError as e:
+        with _link_jobs_lock:
+            _link_jobs[job_id].update(status="error", error=str(e))
+        return
+
+    # The scraped photo is a raw product shot — often a model wearing the full
+    # outfit, not an isolated shot of just this item (e.g. "pants" product page,
+    # og:image is a photo of someone wearing pants + a shirt + shoes). Run it
+    # through the same Gemini isolation Gemini does for photo-import
+    # (reconstruct_garment) instead of handing the raw photo straight to the
+    # form — the scraped title tells Gemini which specific garment to isolate,
+    # so (unlike photo-import) there's no need for a separate detection pass.
+    description = scraped["title"] or "the clothing item in this photo"
+    try:
+        will_bill = not cutout_cached(scraped["image_bytes"], description)
+        if will_bill:
+            blocked = _cap_blocked(uid)
+            if blocked:
+                with _link_jobs_lock:
+                    _link_jobs[job_id].update(status="error", error=blocked)
+                return
+        png = reconstruct_garment(scraped["image_bytes"], description)
+        if will_bill:
+            record_image_event(uid, 'cutout')
+    except Exception as e:
+        with _link_jobs_lock:
+            _link_jobs[job_id].update(status="error", error=_friendly_gemini_error(e))
+        return
+
+    with _link_jobs_lock:
+        _link_jobs[job_id].update(
+            status="done",
+            image_b64=base64.b64encode(png).decode('ascii'),
+            title=scraped["title"], price=scraped["price"], source_url=scraped["source_url"],
+        )
+
+
 @app.route("/garments/from-link", methods=["POST"])
 def garment_from_link():
     """Scrape a product URL for its photo + title/price (og:image / JSON-LD),
-    for the "paste a link" option on the add-garment page — for something you
-    just bought online instead of photographing it yourself. Returns the image
-    as base64 so the client can feed it through the exact same preview/autotag/
-    save flow as a normal file upload; nothing is saved here."""
+    then isolate just that garment via Gemini (reconstruct_garment) — for the
+    "paste a link" option on the add-garment page, for something you just
+    bought online instead of photographing it yourself. Runs as a background
+    job like the other Gemini calls (~8-15s; a backgrounded mobile tab kills a
+    single open fetch — see /add/photo/analyze for the same pattern)."""
     url = (request.form.get('url') or '').strip()
     if not url:
         return jsonify({"error": "No URL provided"}), 400
-    try:
-        result = fetch_product_page(url)
-    except LinkFetchError as e:
-        return jsonify({"error": str(e)}), 400
-    return jsonify({
-        "image_b64": base64.b64encode(result["image_bytes"]).decode('ascii'),
-        "title": result["title"],
-        "price": result["price"],
-        "source_url": result["source_url"],
-    })
+    if not GEMINI_API_KEY:
+        return jsonify({"error": "GEMINI_API_KEY not set in .env"}), 503
+
+    uid = session['user_id']
+    job_id = uuid.uuid4().hex
+    with _link_jobs_lock:
+        _prune_jobs(_link_jobs)
+        _link_jobs[job_id] = {"status": "running", "user_id": uid, "created_at": time.time()}
+    threading.Thread(target=_run_link_import_job, args=(job_id, uid, url), daemon=True).start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/garments/from-link/<job_id>/status")
+def garment_from_link_status(job_id):
+    job = _link_jobs.get(job_id)
+    # 404 (not 403) for a foreign job_id too — don't confirm it exists at all.
+    if not job or job['user_id'] != session['user_id']:
+        return jsonify({"error": "Job not found"}), 404
+    if job['status'] == 'error':
+        return jsonify({"status": "error", "error": job.get('error', 'Something went wrong.')})
+    if job['status'] == 'done':
+        return jsonify({
+            "status": "done", "image_b64": job['image_b64'],
+            "title": job['title'], "price": job['price'], "source_url": job['source_url'],
+        })
+    return jsonify({"status": "running"})
 
 
 @app.route("/garments/remove-bg", methods=["POST"])

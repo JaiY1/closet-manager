@@ -328,28 +328,76 @@ def test_assert_public_host_blocks_private_ips(monkeypatch):
             link_import._assert_public_host("http://evil.example.com/")
 
 
-def test_garment_from_link_route(app_module, logged_in, monkeypatch):
+def test_garment_from_link_job_isolates_the_garment_via_gemini(app_module, logged_in, monkeypatch):
+    # Regression: the raw scraped product photo is often a model wearing the
+    # whole outfit (e.g. a pants product page whose og:image shows someone
+    # wearing pants + a shirt + shoes) — this must run through the same Gemini
+    # isolation photo-import uses (reconstruct_garment), not be handed to the
+    # form as-is.
+    import time as _time
     c, uid = logged_in
+    monkeypatch.setattr(app_module, "GEMINI_API_KEY", "fake")
     monkeypatch.setattr(app_module, "fetch_product_page", lambda url: {
-        "image_bytes": b"fake-img", "title": "Test Product", "price": "$29.99", "source_url": url,
+        "image_bytes": b"raw-model-photo", "title": "Slim Chino Pants", "price": "$59.99", "source_url": url,
     })
-    r = c.post("/garments/from-link", data={"url": "https://shop.example.com/x"})
+    monkeypatch.setattr(app_module, "cutout_cached", lambda photo_bytes, desc: False)
+    calls = []
+
+    def fake_reconstruct(photo_bytes, desc):
+        calls.append((photo_bytes, desc))
+        return b"isolated-pants-cutout"
+
+    monkeypatch.setattr(app_module, "reconstruct_garment", fake_reconstruct)
+    billed = []
+    monkeypatch.setattr(app_module, "record_image_event", lambda uid, kind: billed.append((uid, kind)))
+
+    r = c.post("/garments/from-link", data={"url": "https://shop.example.com/pants"})
     assert r.status_code == 200
-    body = r.get_json()
-    assert body["title"] == "Test Product"
-    assert base64.b64decode(body["image_b64"]) == b"fake-img"
+    job_id = r.get_json()["job_id"]
+
+    body = {"status": "running"}
+    for _ in range(50):
+        body = c.get(f"/garments/from-link/{job_id}/status").get_json()
+        if body["status"] != "running":
+            break
+        _time.sleep(0.05)
+    assert body["status"] == "done"
+    assert base64.b64decode(body["image_b64"]) == b"isolated-pants-cutout"
+    assert body["title"] == "Slim Chino Pants"
+    # reconstruct_garment got the raw scraped photo + the scraped title as the
+    # description — not the raw photo saved through untouched.
+    assert calls == [(b"raw-model-photo", "Slim Chino Pants")]
+    assert len(billed) == 1
 
 
-def test_garment_from_link_route_surfaces_fetch_error(app_module, logged_in, monkeypatch):
+def test_garment_from_link_job_surfaces_fetch_error(app_module, logged_in, monkeypatch):
+    import time as _time
     c, uid = logged_in
+    monkeypatch.setattr(app_module, "GEMINI_API_KEY", "fake")
 
     def raise_error(url):
         raise app_module.LinkFetchError("Couldn't find a product photo on that page — try pasting a screenshot instead.")
 
     monkeypatch.setattr(app_module, "fetch_product_page", raise_error)
     r = c.post("/garments/from-link", data={"url": "https://shop.example.com/x"})
-    assert r.status_code == 400
-    assert "screenshot" in r.get_json()["error"]
+    assert r.status_code == 200
+    job_id = r.get_json()["job_id"]
+
+    body = {"status": "running"}
+    for _ in range(50):
+        body = c.get(f"/garments/from-link/{job_id}/status").get_json()
+        if body["status"] != "running":
+            break
+        _time.sleep(0.05)
+    assert body["status"] == "error"
+    assert "screenshot" in body["error"]
+
+
+def test_garment_from_link_requires_gemini_key(app_module, logged_in, monkeypatch):
+    c, uid = logged_in
+    monkeypatch.setattr(app_module, "GEMINI_API_KEY", None)
+    r = c.post("/garments/from-link", data={"url": "https://shop.example.com/x"})
+    assert r.status_code == 503
 
 
 def test_garment_from_link_route_requires_login(client):
