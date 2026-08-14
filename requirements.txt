@@ -10,3 +10,4 @@ requests
 Flask-Limiter
 Authlib
 resend
+beautifulsoup4

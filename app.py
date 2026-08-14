@@ -50,6 +50,7 @@ from agents import (
 )
 from vision import autotag_garment, autotag_label, detect_garments_in_photo, check_body_photo
 from imagegen import reconstruct_garment, tryon, remove_bg, cutout_cached
+from link_import import fetch_product_page, LinkFetchError
 
 logging.basicConfig(
     level=logging.INFO,
@@ -1222,6 +1223,28 @@ def set_body_photo_route():
     if old and old != rel:
         _delete_upload(old)
     return jsonify({"path": rel, "url": f"/static/{rel}", "warning": warning})
+
+
+@app.route("/garments/from-link", methods=["POST"])
+def garment_from_link():
+    """Scrape a product URL for its photo + title/price (og:image / JSON-LD),
+    for the "paste a link" option on the add-garment page — for something you
+    just bought online instead of photographing it yourself. Returns the image
+    as base64 so the client can feed it through the exact same preview/autotag/
+    save flow as a normal file upload; nothing is saved here."""
+    url = (request.form.get('url') or '').strip()
+    if not url:
+        return jsonify({"error": "No URL provided"}), 400
+    try:
+        result = fetch_product_page(url)
+    except LinkFetchError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({
+        "image_b64": base64.b64encode(result["image_bytes"]).decode('ascii'),
+        "title": result["title"],
+        "price": result["price"],
+        "source_url": result["source_url"],
+    })
 
 
 @app.route("/garments/remove-bg", methods=["POST"])

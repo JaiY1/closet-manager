@@ -3,6 +3,8 @@
 import base64
 from io import BytesIO
 
+import pytest
+
 
 # --- Login gate ---
 
@@ -242,6 +244,117 @@ def test_delete_upload_refuses_paths_outside_uploads(app_module):
     inside.write_bytes(b"x")
     app_module._delete_upload("uploads/temp.png")
     assert not inside.exists()
+
+
+# --- Add from a product link ---
+
+class _FakeResponse:
+    def __init__(self, content=b"", status_code=200, headers=None, is_redirect=False):
+        self.content = content
+        self.status_code = status_code
+        self.headers = headers or {}
+        self.is_redirect = is_redirect
+
+    def iter_content(self, chunk_size):
+        yield self.content
+
+    def close(self):
+        pass
+
+
+_PRODUCT_HTML = b"""
+<html><head>
+  <meta property="og:image" content="https://shop.example.com/img.jpg">
+  <meta property="og:title" content="Navy Oxford Shirt">
+  <script type="application/ld+json">{"offers": {"price": "59.99", "priceCurrency": "USD"}}</script>
+</head></html>
+"""
+
+
+def test_fetch_product_page_happy_path(monkeypatch):
+    import link_import
+
+    def fake_get(url, headers=None, timeout=None, stream=None, allow_redirects=None):
+        if url == "https://shop.example.com/product":
+            return _FakeResponse(content=_PRODUCT_HTML)
+        if url == "https://shop.example.com/img.jpg":
+            return _FakeResponse(content=b"fake-image-bytes", headers={"Content-Type": "image/jpeg"})
+        raise AssertionError(f"unexpected url {url}")
+
+    monkeypatch.setattr(link_import.requests, "get", fake_get)
+    monkeypatch.setattr(link_import.socket, "gethostbyname", lambda host: "93.184.216.34")
+
+    result = link_import.fetch_product_page("https://shop.example.com/product")
+    assert result["image_bytes"] == b"fake-image-bytes"
+    assert result["title"] == "Navy Oxford Shirt"
+    assert "59.99" in result["price"]
+
+
+def test_fetch_product_page_no_image_raises(monkeypatch):
+    import link_import
+
+    def fake_get(url, headers=None, timeout=None, stream=None, allow_redirects=None):
+        return _FakeResponse(content=b"<html><head><title>No Image Here</title></head></html>")
+
+    monkeypatch.setattr(link_import.requests, "get", fake_get)
+    monkeypatch.setattr(link_import.socket, "gethostbyname", lambda host: "93.184.216.34")
+
+    with pytest.raises(link_import.LinkFetchError):
+        link_import.fetch_product_page("https://shop.example.com/no-image")
+
+
+def test_fetch_product_page_rejects_non_image_content_type(monkeypatch):
+    import link_import
+
+    def fake_get(url, headers=None, timeout=None, stream=None, allow_redirects=None):
+        if url == "https://shop.example.com/product":
+            return _FakeResponse(content=_PRODUCT_HTML)
+        return _FakeResponse(content=b"<html>not an image</html>", headers={"Content-Type": "text/html"})
+
+    monkeypatch.setattr(link_import.requests, "get", fake_get)
+    monkeypatch.setattr(link_import.socket, "gethostbyname", lambda host: "93.184.216.34")
+
+    with pytest.raises(link_import.LinkFetchError):
+        link_import.fetch_product_page("https://shop.example.com/product")
+
+
+def test_assert_public_host_blocks_private_ips(monkeypatch):
+    # SSRF guard — this fetches whatever URL a logged-in user pastes, so it
+    # must never be able to reach internal/private addresses.
+    import link_import
+    for ip in ("127.0.0.1", "10.0.0.5", "192.168.1.1", "169.254.169.254"):
+        monkeypatch.setattr(link_import.socket, "gethostbyname", lambda host, ip=ip: ip)
+        with pytest.raises(link_import.LinkFetchError):
+            link_import._assert_public_host("http://evil.example.com/")
+
+
+def test_garment_from_link_route(app_module, logged_in, monkeypatch):
+    c, uid = logged_in
+    monkeypatch.setattr(app_module, "fetch_product_page", lambda url: {
+        "image_bytes": b"fake-img", "title": "Test Product", "price": "$29.99", "source_url": url,
+    })
+    r = c.post("/garments/from-link", data={"url": "https://shop.example.com/x"})
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["title"] == "Test Product"
+    assert base64.b64decode(body["image_b64"]) == b"fake-img"
+
+
+def test_garment_from_link_route_surfaces_fetch_error(app_module, logged_in, monkeypatch):
+    c, uid = logged_in
+
+    def raise_error(url):
+        raise app_module.LinkFetchError("Couldn't find a product photo on that page — try pasting a screenshot instead.")
+
+    monkeypatch.setattr(app_module, "fetch_product_page", raise_error)
+    r = c.post("/garments/from-link", data={"url": "https://shop.example.com/x"})
+    assert r.status_code == 400
+    assert "screenshot" in r.get_json()["error"]
+
+
+def test_garment_from_link_route_requires_login(client):
+    r = client.post("/garments/from-link", data={"url": "https://shop.example.com/x"})
+    assert r.status_code == 302 and "/login" in r.headers["Location"]
 
 
 # --- Cost caps ---
