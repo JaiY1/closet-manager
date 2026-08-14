@@ -619,8 +619,19 @@ def service_worker():
 def serve_upload(filename):
     """Uploaded/generated images live under DATA_DIR/uploads (outside the code's
     static/ folder) but keep their /static/uploads/... URLs. This more-specific
-    route overrides Flask's built-in static handler for that subpath."""
-    return send_from_directory(UPLOAD_DIR, filename)
+    route overrides Flask's built-in static handler for that subpath.
+
+    Every writer (_unique_name()) mints a fresh timestamp+uuid filename per
+    image — nothing here is ever overwritten in place, so a filename's bytes
+    never change once served. Safe to cache hard: `immutable` tells the browser
+    to skip revalidation entirely on repeat views (this was the catalog-page
+    slowdown after the 64-garment migration — every image was being re-fetched
+    on every load). `private` (not `public`) since this route is login-gated
+    per-user, not something a shared/CDN cache should hold.
+    """
+    resp = send_from_directory(UPLOAD_DIR, filename)
+    resp.headers["Cache-Control"] = "private, max-age=31536000, immutable"
+    return resp
 
 
 # --- Catalog ---

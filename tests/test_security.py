@@ -24,6 +24,18 @@ def test_healthz_and_login_are_public(client):
     assert client.get("/login").status_code == 200
 
 
+def test_uploaded_images_are_cached_hard(app_module, logged_in):
+    # Regression: uploaded/generated images had no Cache-Control at all, so the
+    # browser re-fetched every one on every page load — painfully slow once the
+    # catalog grew past a handful of garments. Filenames are minted fresh per
+    # write (_unique_name()) and never reused, so long+immutable caching is safe.
+    c, uid = logged_in
+    (app_module.UPLOAD_DIR / "cache-test.png").write_bytes(b"fake-png-bytes")
+    r = c.get("/static/uploads/cache-test.png")
+    assert r.status_code == 200
+    assert r.headers["Cache-Control"] == "private, max-age=31536000, immutable"
+
+
 def test_signup_creates_session_and_grants_access(client):
     r = client.post("/signup", data={
         "name": "Signup Flow User", "email": "signup-flow@example.com", "password": "correct-horse-battery",
