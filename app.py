@@ -8,6 +8,7 @@ import tarfile
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from io import BytesIO
 from pathlib import Path
@@ -841,6 +842,12 @@ def _prune_jobs(jobs: dict):
 _photo_jobs = {}
 _photo_jobs_lock = threading.Lock()
 
+# Eager-cutout reconstructions for one photo run concurrently (I/O-bound — each
+# is a ~8-15s wait on Gemini, not CPU work — so threads, not processes, and the
+# GIL is released while waiting). Capped rather than unbounded so one huge outfit
+# photo can't spin up dozens of simultaneous Gemini calls.
+_CUTOUT_MAX_WORKERS = 4
+
 
 def _run_photo_analyze_job(job_id, uid, photo_bytes):
     try:
@@ -850,36 +857,48 @@ def _run_photo_analyze_job(job_id, uid, photo_bytes):
             _photo_jobs[job_id].update(status="error", error=f"Detection failed: {e}")
         return
 
-    items = []
+    # Claude's bounding boxes were unreliable for this composition (mirror
+    # selfies, off-center subjects) — pre-cropping to them cut out the wrong
+    # region entirely. Send Gemini the full photo instead and let it locate +
+    # isolate the named garment itself, which it does well.
     for g in detected:
-        try:
-            # Claude's bounding boxes were unreliable for this composition (mirror
-            # selfies, off-center subjects) — pre-cropping to them cut out the
-            # wrong region entirely. Send Gemini the full photo instead and let it
-            # locate + isolate the named garment itself, which it does well.
-            g['crop_b64'] = base64.b64encode(photo_bytes).decode('ascii')
-            if not OPTIN_CUTOUTS:
-                # Eager path: reconstruct every item up front.
-                desc = ", ".join(x for x in [g.get('color'), g.get('name'), g.get('notes')] if x)
-                will_bill = not cutout_cached(photo_bytes, desc)
-                if will_bill:
-                    blocked = _cap_blocked(uid)
-                    if blocked:
-                        g['error'] = blocked
-                        items.append(g)
-                        continue
+        g['crop_b64'] = base64.b64encode(photo_bytes).decode('ascii')
+
+    if not OPTIN_CUTOUTS:
+        # Eager path: reconstruct every item's cutout up front, in parallel — this
+        # used to run one at a time, so a multi-garment photo took ~1 min. One cap
+        # check up front rather than per-item: a single outfit photo is a handful
+        # of garments at most, so a batch can overshoot the daily cap by at most
+        # that many (the cap is generous enough to absorb it), and checking once
+        # avoids a race where concurrent calls all pass the check before any of
+        # them records against it.
+        blocked = _cap_blocked(uid)
+        to_generate = []
+        for g in detected:
+            desc = ", ".join(x for x in [g.get('color'), g.get('name'), g.get('notes')] if x)
+            will_bill = not cutout_cached(photo_bytes, desc)
+            if will_bill and blocked:
+                g['error'] = blocked
+            else:
+                to_generate.append((g, desc, will_bill))
+
+        def _generate(entry):
+            g, desc, will_bill = entry
+            try:
                 png = reconstruct_garment(photo_bytes, desc)
                 if will_bill:
                     record_image_event(uid, 'cutout')
                 g['cutout_b64'] = base64.b64encode(png).decode('ascii')
-            items.append(g)
-        except Exception as e:
-            # One garment failing shouldn't sink the whole batch.
-            g['error'] = _friendly_gemini_error(e)
-            items.append(g)
+            except Exception as e:
+                # One garment failing shouldn't sink the whole batch.
+                g['error'] = _friendly_gemini_error(e)
+
+        if to_generate:
+            with ThreadPoolExecutor(max_workers=min(len(to_generate), _CUTOUT_MAX_WORKERS)) as pool:
+                list(pool.map(_generate, to_generate))
 
     with _photo_jobs_lock:
-        _photo_jobs[job_id].update(status="done", garments=items, optin=OPTIN_CUTOUTS)
+        _photo_jobs[job_id].update(status="done", garments=detected, optin=OPTIN_CUTOUTS)
 
 
 @app.route("/add/photo/analyze", methods=["POST"])

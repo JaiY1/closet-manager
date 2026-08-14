@@ -1,5 +1,6 @@
 """Auth gates, upload safety, and cross-user isolation regressions."""
 
+import base64
 from io import BytesIO
 
 
@@ -335,6 +336,48 @@ def test_photo_analyze_job_runs_and_can_be_polled(app_module, logged_in, monkeyp
         _time.sleep(0.05)
     assert body["status"] == "done"
     assert body["garments"][0]["name"] == "Test Shirt"
+
+
+def test_photo_analyze_job_reconstructs_eager_cutouts_in_parallel(app_module, logged_in, monkeypatch):
+    # Regression: the eager-cutout loop (OPTIN_CUTOUTS=False, the default) used
+    # to reconstruct each detected garment's cutout sequentially. Now they run
+    # concurrently via a ThreadPoolExecutor — this checks each garment still
+    # gets its own correct result (no cross-thread mixing) and each billed item
+    # is still recorded exactly once against the cost cap.
+    import time as _time
+    c, uid = logged_in
+    monkeypatch.setattr(app_module, "ANTHROPIC_API_KEY", "fake")
+    monkeypatch.setattr(app_module, "GEMINI_API_KEY", "fake")
+    monkeypatch.setattr(app_module, "OPTIN_CUTOUTS", False)
+    detected = [
+        {"name": "Shirt", "type": "shirt", "color": "blue"},
+        {"name": "Pants", "type": "pants", "color": "black"},
+        {"name": "Shoes", "type": "shoes", "color": "white"},
+    ]
+    monkeypatch.setattr(app_module, "detect_garments_in_photo", lambda photo_bytes: detected)
+    monkeypatch.setattr(app_module, "cutout_cached", lambda photo_bytes, desc: False)
+    monkeypatch.setattr(app_module, "reconstruct_garment", lambda photo_bytes, desc: f"png-for-{desc}".encode())
+    billed = []
+    monkeypatch.setattr(app_module, "record_image_event", lambda uid, kind: billed.append((uid, kind)))
+
+    r = c.post("/add/photo/analyze", data={'image': (BytesIO(b"fake-bytes"), 'photo.jpg')},
+               content_type='multipart/form-data')
+    assert r.status_code == 200
+    job_id = r.get_json()["job_id"]
+
+    body = {"status": "running"}
+    for _ in range(50):
+        body = c.get(f"/add/photo/analyze/{job_id}/status").get_json()
+        if body["status"] != "running":
+            break
+        _time.sleep(0.05)
+    assert body["status"] == "done"
+    garments = body["garments"]
+    assert len(garments) == 3
+    for g in garments:
+        expected_desc = f"{g['color']}, {g['name']}"
+        assert base64.b64decode(g["cutout_b64"]) == f"png-for-{expected_desc}".encode()
+    assert len(billed) == 3
 
 
 def test_photo_analyze_status_unknown_job_404(logged_in):
