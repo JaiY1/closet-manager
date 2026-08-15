@@ -174,6 +174,7 @@ touching real catalog data.
 - Add sentence-transformers as a dependency — use `ONNXMiniLM_L6_V2` from chromadb instead
 - Commit `closet.db`, `chroma_db/`, or `static/uploads/` — all in `.gitignore`
 - Add a shopping feature without Tavily — web search is live/dynamic, not a static RAG problem
+- Add a `Co-Authored-By: Claude...` trailer to commit messages in this project — Jai's explicit call (2026-08-14), overriding the general default. All prior instances of it were scrubbed from both this repo's and the monorepo's entire git history (full rewrite + force-push) at his request; commits should show only him as author, full stop.
 
 ---
 
