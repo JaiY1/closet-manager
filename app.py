@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -40,6 +41,7 @@ from database import (
     record_image_event, count_images_today, count_images_month,
     add_tryon_history, get_tryon_history,
     get_user_by_email, get_user_by_google_sub, create_user_password, create_user_google,
+    user_owns_upload,
     set_user_password, set_user_email_and_password, link_google_to_user,
     NameTaken, EmailTaken,
     list_users_with_counts, merge_user_data, UserNotFound,
@@ -217,6 +219,14 @@ def _cap_blocked(uid):
     if MONTHLY_GLOBAL_CAP and count_images_month() >= MONTHLY_GLOBAL_CAP:
         return "The app has reached its monthly image-generation limit. Please try again next month."
     return None
+
+
+def _internal_error(endpoint: str, e: Exception, message: str = "Something went wrong on our end. Please try again."):
+    """Log the real exception to error_log and return a generic JSON 500 —
+    returning raw str(e) leaks SDK/internal details to the client."""
+    _record_error(endpoint, type(e).__name__, e, traceback.format_exc(), session.get('user_id'))
+    g._error_already_logged = True
+    return jsonify({"error": message}), 500
 
 
 def _friendly_gemini_error(e) -> str:
@@ -403,9 +413,16 @@ def google_login():
 def google_callback():
     if not google_oauth:
         return redirect(url_for('login_page'))
-    token = google_oauth.authorize_access_token()
-    nonce = session.pop('oauth_nonce', None)
-    claims = google_oauth.parse_id_token(token, nonce=nonce)
+    try:
+        # Raises on user-cancelled consent, a stale/replayed state param, or a
+        # token-exchange failure — all user-recoverable, none deserve a 500.
+        token = google_oauth.authorize_access_token()
+        nonce = session.pop('oauth_nonce', None)
+        claims = google_oauth.parse_id_token(token, nonce=nonce)
+    except Exception:
+        logger.exception("Google OAuth callback failed")
+        return render_template("login.html", google_enabled=True,
+                               error="Google sign-in didn't complete. Please try again."), 401
     if not claims or not claims.get('email_verified'):
         return render_template("login.html", google_enabled=True, error="Google sign-in failed: no verified email on that account."), 401
 
@@ -484,6 +501,28 @@ def _send_password_reset_email(to_email: str, reset_url: str):
         logger.exception("Failed to send password-reset email to %s", to_email)
 
 
+def _pw_fingerprint(password_hash) -> str:
+    """Short digest of the current password hash, baked into reset tokens so a
+    successful reset (which changes the hash) invalidates every outstanding
+    token — otherwise a used token stays valid for its full hour."""
+    return hashlib.sha256((password_hash or '').encode()).hexdigest()[:16]
+
+
+def _load_reset_payload(token):
+    """Verify a reset token's signature, age, AND that the account's password
+    hasn't changed since it was issued. Returns the payload dict or None."""
+    try:
+        data = _reset_serializer.loads(token, max_age=_RESET_TOKEN_MAX_AGE)
+    except (BadSignature, SignatureExpired):
+        return None
+    if not isinstance(data, dict):
+        return None
+    user = get_user(data.get('uid')) if data.get('uid') else None
+    if not user or data.get('v') != _pw_fingerprint(user.get('password_hash')):
+        return None
+    return data
+
+
 @app.route("/forgot-password")
 def forgot_password_page():
     return render_template("forgot_password.html")
@@ -495,7 +534,7 @@ def do_forgot_password():
     email = (request.form.get('email') or '').strip().lower()
     user = get_user_by_email(email) if email else None
     if user:
-        token = _reset_serializer.dumps({"uid": user['id']})
+        token = _reset_serializer.dumps({"uid": user['id'], "v": _pw_fingerprint(user.get('password_hash'))})
         reset_url = url_for('reset_password_page', token=token, _external=True)
         _send_password_reset_email(user['email'], reset_url)
     # Identical response whether or not the email exists — don't leak account existence.
@@ -504,9 +543,7 @@ def do_forgot_password():
 
 @app.route("/reset-password/<token>")
 def reset_password_page(token):
-    try:
-        _reset_serializer.loads(token, max_age=_RESET_TOKEN_MAX_AGE)
-    except (BadSignature, SignatureExpired):
+    if not _load_reset_payload(token):
         return render_template("reset_password.html", invalid=True)
     return render_template("reset_password.html", token=token)
 
@@ -514,9 +551,8 @@ def reset_password_page(token):
 @app.route("/reset-password/<token>", methods=["POST"])
 @limiter.limit("10 per minute")
 def do_reset_password(token):
-    try:
-        data = _reset_serializer.loads(token, max_age=_RESET_TOKEN_MAX_AGE)
-    except (BadSignature, SignatureExpired):
+    data = _load_reset_payload(token)
+    if not data:
         return render_template("reset_password.html", invalid=True)
     password = request.form.get('password') or ''
     if len(password) < 8:
@@ -699,7 +735,13 @@ def serve_upload(filename):
     slowdown after the 64-garment migration — every image was being re-fetched
     on every load). `private` (not `public`) since this route is login-gated
     per-user, not something a shared/CDN cache should hold.
+
+    Ownership-gated, not just session-gated: filenames are unguessable
+    (timestamp+uuid), but a leaked filename shouldn't let a different
+    logged-in account fetch someone else's body photo or renders.
     """
+    if not user_owns_upload(session['user_id'], f"uploads/{filename}"):
+        return jsonify({"error": "Not found"}), 404
     resp = send_from_directory(UPLOAD_DIR, filename)
     resp.headers["Cache-Control"] = "private, max-age=31536000, immutable"
     return resp
@@ -884,7 +926,7 @@ def autotag():
         result = autotag_garment(request.files['image'].read())
         return jsonify(result)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return _internal_error(request.path, e, "Auto-tagging failed. Please try again.")
 
 
 @app.route("/garments/autotag/label", methods=["POST"])
@@ -897,7 +939,7 @@ def autotag_label_route():
         result = autotag_label(request.files['image'].read())
         return jsonify(result)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return _internal_error(request.path, e, "Label reading failed. Please try again.")
 
 
 # --- Photo import (outfit photo -> garment cutouts) ---
@@ -1181,7 +1223,7 @@ def detect_calendar_outfit():
         detected_ids = detect_outfit_rag(request.files['image'].read(), session['user_id'])
         return jsonify({"detected_ids": detected_ids})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return _internal_error(request.path, e, "Outfit detection failed. Please try again.")
 
 
 @app.route("/calendar", methods=["POST"])
@@ -1212,7 +1254,7 @@ def suggest():
         items = suggest_outfit(session['user_id'], occasion=occasion, weather=weather)
         return jsonify({"items": items})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return _internal_error(request.path, e, "Couldn't build a suggestion. Please try again.")
 
 
 # --- Virtual try-on ---
@@ -1390,7 +1432,7 @@ def remove_bg_route():
     try:
         png = remove_bg(request.files['image'].read())
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return _internal_error(request.path, e, "Background removal failed. Please try again.")
     return jsonify({"image_b64": base64.b64encode(png).decode('ascii')})
 
 
@@ -1514,8 +1556,12 @@ def shop():
     try:
         results = shopper_agent(query, session['user_id'], max_price=max_price)
         return jsonify({"results": results})
+    except RuntimeError as e:
+        # shopping.py raises RuntimeError with curated user-facing messages
+        # (rate limit, bad key, provider down) — safe to show as-is.
+        return jsonify({"error": str(e)}), 502
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return _internal_error(request.path, e, "Shopping search failed. Please try again.")
 
 
 @app.route("/shop/gaps")
@@ -1526,7 +1572,7 @@ def shop_gaps():
         gaps = identify_wardrobe_gaps(session['user_id'])
         return jsonify({"gaps": gaps})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return _internal_error(request.path, e, "Gap detection failed. Please try again.")
 
 
 @app.route("/wishlist")
@@ -1579,7 +1625,7 @@ def ask():
         answer = run_coordinator(query, session['user_id'], history=data.get('history') or [])
         return jsonify({"answer": answer})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return _internal_error(request.path, e, "Couldn't answer that just now. Please try again.")
 
 
 # --- Style Profile ---
@@ -1598,7 +1644,7 @@ def style_refresh():
         summary = refresh_style_profile(session['user_id'])
         return jsonify({"summary": summary})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return _internal_error(request.path, e, "Couldn't refresh your style profile. Please try again.")
 
 
 if __name__ == "__main__":

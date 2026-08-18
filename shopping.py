@@ -6,14 +6,16 @@ from config import SERPER_API_KEY
 SERPER_SHOPPING_URL = "https://google.serper.dev/shopping"
 
 
-def _parse_price(price_str) -> float:
-    """Extract a float from strings like '$49.99' or '49.99 USD'. Returns inf if unparseable,
-    so items with no price never get dropped by a max_price filter."""
+def _parse_price(price_str):
+    """Extract a float from strings like '$49.99' or '49.99 USD'. Returns None if
+    unparseable, so items with no price never get dropped by a max_price filter.
+    (Previously returned inf, which the <= filter always dropped — the exact
+    opposite of the stated intent.)"""
     if not price_str:
-        return float("inf")
+        return None
     match = re.search(r"[\d,]+\.?\d*", str(price_str))
     if not match:
-        return float("inf")
+        return None
     return float(match.group().replace(",", ""))
 
 
@@ -42,7 +44,10 @@ def search_shopping(query: str, num: int = 10, max_price: float = None) -> list[
 
     results = resp.json().get("shopping", [])
     if max_price:
-        results = [r for r in results if _parse_price(r.get("price")) <= max_price]
+        results = [
+            r for r in results
+            if (p := _parse_price(r.get("price"))) is None or p <= max_price
+        ]
     # Serper's shopping endpoint doesn't honor `num` — it returns as many as it finds
     results = results[:num]
 

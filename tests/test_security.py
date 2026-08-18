@@ -33,9 +33,22 @@ def test_uploaded_images_are_cached_hard(app_module, logged_in):
     # write (_unique_name()) and never reused, so long+immutable caching is safe.
     c, uid = logged_in
     (app_module.UPLOAD_DIR / "cache-test.png").write_bytes(b"fake-png-bytes")
+    # Uploads are ownership-gated now — register the file as this user's.
+    from database import set_body_photo
+    set_body_photo(uid, "uploads/cache-test.png")
     r = c.get("/static/uploads/cache-test.png")
     assert r.status_code == 200
     assert r.headers["Cache-Control"] == "private, max-age=31536000, immutable"
+
+
+def test_uploads_not_owned_by_user_404(app_module, logged_in):
+    # A logged-in session alone isn't enough — the file must belong to the
+    # requesting account, or a leaked filename would expose another user's
+    # body photo / renders to anyone with an account.
+    c, uid = logged_in
+    (app_module.UPLOAD_DIR / "someone-elses.png").write_bytes(b"fake-png-bytes")
+    r = c.get("/static/uploads/someone-elses.png")
+    assert r.status_code == 404
 
 
 def test_signup_creates_session_and_grants_access(client):
@@ -133,12 +146,20 @@ def test_reset_password_flow_end_to_end(client, app_module):
         "name": "Reset Flow User", "email": "reset-flow@example.com", "password": "correct-horse-battery",
     })
     client.get("/logout")
-    token = app_module._reset_serializer.dumps({"uid": app_module.get_user_by_email("reset-flow@example.com")["id"]})
+    user = app_module.get_user_by_email("reset-flow@example.com")
+    # Tokens are bound to the current password hash so a completed reset
+    # invalidates them (see _pw_fingerprint) — build one the way the app does.
+    token = app_module._reset_serializer.dumps(
+        {"uid": user["id"], "v": app_module._pw_fingerprint(user["password_hash"])}
+    )
     r = client.post(f"/reset-password/{token}", data={"password": "new-correct-horse"}, follow_redirects=False)
     assert r.status_code == 302
     r2 = client.post("/login", data={"email": "reset-flow@example.com", "password": "new-correct-horse"},
                       follow_redirects=False)
     assert r2.status_code == 302
+    # The same token must be dead now — the password hash it was bound to changed.
+    r3 = client.get(f"/reset-password/{token}")
+    assert "invalid or has expired" in r3.get_data(as_text=True)
 
 
 # --- Google sign-in ---
@@ -282,7 +303,8 @@ def test_fetch_product_page_happy_path(monkeypatch):
         raise AssertionError(f"unexpected url {url}")
 
     monkeypatch.setattr(link_import.requests, "get", fake_get)
-    monkeypatch.setattr(link_import.socket, "gethostbyname", lambda host: "93.184.216.34")
+    monkeypatch.setattr(link_import.socket, "getaddrinfo",
+                        lambda *a, **k: [(link_import.socket.AF_INET, link_import.socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))])
 
     result = link_import.fetch_product_page("https://shop.example.com/product")
     assert result["image_bytes"] == b"fake-image-bytes"
@@ -297,7 +319,8 @@ def test_fetch_product_page_no_image_raises(monkeypatch):
         return _FakeResponse(content=b"<html><head><title>No Image Here</title></head></html>")
 
     monkeypatch.setattr(link_import.requests, "get", fake_get)
-    monkeypatch.setattr(link_import.socket, "gethostbyname", lambda host: "93.184.216.34")
+    monkeypatch.setattr(link_import.socket, "getaddrinfo",
+                        lambda *a, **k: [(link_import.socket.AF_INET, link_import.socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))])
 
     with pytest.raises(link_import.LinkFetchError):
         link_import.fetch_product_page("https://shop.example.com/no-image")
@@ -312,7 +335,8 @@ def test_fetch_product_page_rejects_non_image_content_type(monkeypatch):
         return _FakeResponse(content=b"<html>not an image</html>", headers={"Content-Type": "text/html"})
 
     monkeypatch.setattr(link_import.requests, "get", fake_get)
-    monkeypatch.setattr(link_import.socket, "gethostbyname", lambda host: "93.184.216.34")
+    monkeypatch.setattr(link_import.socket, "getaddrinfo",
+                        lambda *a, **k: [(link_import.socket.AF_INET, link_import.socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))])
 
     with pytest.raises(link_import.LinkFetchError):
         link_import.fetch_product_page("https://shop.example.com/product")
@@ -323,7 +347,8 @@ def test_assert_public_host_blocks_private_ips(monkeypatch):
     # must never be able to reach internal/private addresses.
     import link_import
     for ip in ("127.0.0.1", "10.0.0.5", "192.168.1.1", "169.254.169.254"):
-        monkeypatch.setattr(link_import.socket, "gethostbyname", lambda host, ip=ip: ip)
+        monkeypatch.setattr(link_import.socket, "getaddrinfo",
+                            lambda *a, ip=ip, **k: [(link_import.socket.AF_INET, link_import.socket.SOCK_STREAM, 6, "", (ip, 0))])
         with pytest.raises(link_import.LinkFetchError):
             link_import._assert_public_host("http://evil.example.com/")
 
@@ -449,11 +474,10 @@ def test_server_error_handler_records_full_traceback(app_module):
     assert "kaboom" in errors[0]["traceback"]
 
 
-def test_manual_500_response_gets_logged_via_after_request(app_module, logged_in, monkeypatch):
-    # Regression: a route that catches its own exception and manually returns
-    # (jsonify(...), 500) never reaches errorhandler(500) — no exception is
-    # propagating — so without the after_request catch-all these would go
-    # completely unrecorded.
+def test_route_500_logs_details_but_returns_generic_message(app_module, logged_in, monkeypatch):
+    # Routes that catch their own exception log the real type + traceback via
+    # _internal_error() but must return a GENERIC message — raw str(e) used to
+    # leak SDK/internal details to the client.
     c, uid = logged_in
     monkeypatch.setattr(app_module, "ANTHROPIC_API_KEY", "fake")
 
@@ -464,12 +488,30 @@ def test_manual_500_response_gets_logged_via_after_request(app_module, logged_in
     r = c.post("/garments/autotag", data={'image': (BytesIO(b"fake"), 'x.jpg')},
                content_type='multipart/form-data')
     assert r.status_code == 500
+    assert "autotag exploded" not in r.get_data(as_text=True)  # no internal detail leaked
 
     from database import get_recent_errors
     errors = get_recent_errors(limit=1)
     assert errors[0]["endpoint"] == "/garments/autotag"
-    assert errors[0]["error_type"] == "HTTPError"
+    assert errors[0]["error_type"] == "RuntimeError"
     assert "autotag exploded" in errors[0]["error_message"]
+    assert "autotag exploded" in errors[0]["traceback"]
+
+
+def test_manual_500_response_gets_logged_via_after_request(app_module, logged_in):
+    # The after_request catch-all still covers any route that manually returns
+    # (jsonify(...), 500) without logging — no exception propagates, so
+    # errorhandler(500) never fires for those.
+    from flask import jsonify as _jsonify
+    with app_module.app.test_request_context("/manual/500"):
+        resp = app_module.app.make_response((_jsonify({"error": "manual failure"}), 500))
+        app_module._log_any_500(resp)
+
+    from database import get_recent_errors
+    errors = get_recent_errors(limit=1)
+    assert errors[0]["endpoint"] == "/manual/500"
+    assert errors[0]["error_type"] == "HTTPError"
+    assert "manual failure" in errors[0]["error_message"]
     assert errors[0]["traceback"] == ""  # no traceback available at this layer
 
 

@@ -38,12 +38,25 @@ def _assert_public_host(url: str):
     host = parsed.hostname
     if not host:
         raise LinkFetchError("That doesn't look like a valid URL.")
+    # Check EVERY address the host resolves to (v4 and v6), not just the first
+    # A record — a host with one public and one private address would otherwise
+    # pass on the public one while requests connects to the private one.
+    # (Residual risk: a short-TTL DNS-rebinding attacker can still swap the
+    # record between this check and requests' own resolve; fully closing that
+    # requires pinning the connection to the checked IP.)
     try:
-        ip = ipaddress.ip_address(socket.gethostbyname(host))
-    except (socket.gaierror, ValueError):
+        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except socket.gaierror:
         raise LinkFetchError("Couldn't resolve that URL's host.")
-    if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
-        raise LinkFetchError("That URL isn't reachable.")
+    if not infos:
+        raise LinkFetchError("Couldn't resolve that URL's host.")
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            raise LinkFetchError("That URL isn't reachable.")
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+            raise LinkFetchError("That URL isn't reachable.")
 
 
 def _fetch_capped(url: str, max_bytes: int) -> tuple:
@@ -62,11 +75,17 @@ def _fetch_capped(url: str, max_bytes: int) -> tuple:
             resp.close()
             raise LinkFetchError(f"That page returned an error ({resp.status_code}) — check the link.")
         content = b""
+        truncated = False
         for chunk in resp.iter_content(8192):
             content += chunk
             if len(content) > max_bytes:
+                truncated = True
                 break
         resp.close()
+        # A truncated page is fine (we only need <head> metadata), but a
+        # truncated image would be passed on as corrupt bytes — reject it.
+        if truncated and resp.headers.get("Content-Type", "").startswith("image/"):
+            raise LinkFetchError("That page's photo is too large to import — try pasting a screenshot instead.")
         return resp, content
     raise LinkFetchError("Too many redirects.")
 

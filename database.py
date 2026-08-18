@@ -483,6 +483,37 @@ def link_google_to_user(user_id: int, google_sub: str, email: str = ""):
     conn.close()
 
 
+def user_owns_upload(user_id: int, rel_path: str) -> bool:
+    """True if this upload path belongs to the user — their garment images
+    (main, label, or extras), body photo, or try-on renders. Backs the
+    ownership check on /static/uploads/... so one logged-in account can't
+    fetch another account's images by filename."""
+    conn = get_db()
+    try:
+        if conn.execute(
+            "SELECT 1 FROM garments WHERE user_id = ? AND (image_path = ? OR label_image_path = ?)",
+            (user_id, rel_path, rel_path)
+        ).fetchone():
+            return True
+        if conn.execute(
+            """SELECT 1 FROM garment_images gi JOIN garments g ON g.id = gi.garment_id
+               WHERE g.user_id = ? AND gi.image_path = ?""",
+            (user_id, rel_path)
+        ).fetchone():
+            return True
+        if conn.execute(
+            "SELECT 1 FROM users WHERE id = ? AND body_photo_path = ?", (user_id, rel_path)
+        ).fetchone():
+            return True
+        if conn.execute(
+            "SELECT 1 FROM tryon_history WHERE user_id = ? AND image_path = ?", (user_id, rel_path)
+        ).fetchone():
+            return True
+        return False
+    finally:
+        conn.close()
+
+
 def get_body_photo(user_id: int) -> str:
     conn = get_db()
     row = conn.execute("SELECT body_photo_path FROM users WHERE id = ?", (user_id,)).fetchone()
