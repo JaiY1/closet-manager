@@ -256,6 +256,50 @@
     text-decoration: underline;
     padding: 0;
   }
+
+  /* Garment detail sheet — opens when a card is tapped */
+  .garment-card { cursor: pointer; }
+  .detail-overlay {
+    display: none;
+    position: fixed; inset: 0; z-index: 50;
+    background: rgba(26, 26, 26, 0.55);
+    align-items: center; justify-content: center;
+    padding: 20px;
+  }
+  .detail-overlay.open { display: flex; }
+  .detail-sheet {
+    background: var(--surface);
+    border: 2px solid var(--line);
+    border-radius: 14px;
+    box-shadow: var(--shadow);
+    width: 100%; max-width: 420px;
+    max-height: 100%;
+    overflow-y: auto;
+    position: relative;
+  }
+  .detail-sheet .garment-img { aspect-ratio: 1; }
+  .detail-sheet .garment-img img { position: static; width: 100%; height: 100%; object-fit: contain; }
+  .detail-close {
+    position: absolute; top: 10px; right: 10px; z-index: 2;
+    width: 34px; height: 34px; border-radius: 50%;
+    background: var(--surface); border: 2px solid var(--line);
+    font-size: 1rem; cursor: pointer; color: var(--text);
+  }
+  .detail-body { padding: 16px 18px 18px; }
+  .detail-name { font-family: var(--font-display); font-weight: 700; font-size: 1.15rem; margin-bottom: 12px; }
+  .detail-rows { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 7px 14px; font-size: 0.9rem; }
+  .detail-rows dt { font-family: var(--font-mono); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); padding-top: 3px; }
+  .detail-rows dd { overflow-wrap: anywhere; }
+  .detail-actions { display: flex; gap: 8px; margin-top: 18px; }
+  .detail-actions .btn { flex: 1; }
+  @media (max-width: 720px) {
+    .detail-overlay { align-items: flex-end; padding: 0; }
+    .detail-sheet {
+      max-width: none; max-height: 88%;
+      border-radius: 16px 16px 0 0; border-bottom: none; box-shadow: none;
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+  }
 </style>
 
 {% if profile and profile.summary %}
@@ -283,7 +327,12 @@
 {% if garments %}
 <div class="grid" id="garmentGrid">
   {% for g in garments %}
-  <div class="garment-card" data-type="{{ g.type }}">
+  <div class="garment-card" data-type="{{ g.type }}" onclick="openDetail(event, this)"
+       {# single-quoted: tojson escapes ' (as \u0027) but not ", so this stays one attribute #}
+       data-garment='{{ {'id': g.id, 'name': g.name, 'type': g.type, 'color': g.color, 'brand': g.brand,
+                         'fit': g.fit, 'occasion': g.occasion, 'material': g.material, 'size': g.size,
+                         'notes': g.notes, 'tags': g.tags, 'worn_count': g.worn_count,
+                         'image': g.all_images[0] if g.all_images else ''} | tojson }}'>
     <div class="card-actions">
       <a href="/garments/{{ g.id }}/edit" class="card-btn" title="Edit">✎</a>
       <button class="card-btn danger" onclick="deleteGarment({{ g.id }}, this)" title="Remove">✕</button>
@@ -333,7 +382,54 @@
 </div>
 {% endif %}
 
+<div class="detail-overlay" id="detailOverlay" onclick="if (event.target === this) closeDetail()">
+  <div class="detail-sheet">
+    <button class="detail-close" onclick="closeDetail()" title="Close">✕</button>
+    <div class="garment-img" id="detailImg"></div>
+    <div class="detail-body">
+      <div class="detail-name" id="detailName"></div>
+      <dl class="detail-rows" id="detailRows"></dl>
+      <div class="detail-actions">
+        <a class="btn btn-primary" id="detailEdit" href="#">Edit</a>
+        <button class="btn btn-danger" id="detailRemove">Remove</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
+  // Tap a card to see everything about that garment (the ✎/✕ buttons and
+  // gallery arrows on the card keep doing their own thing).
+  const escHtml = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  function openDetail(event, card) {
+    if (event.target.closest('button, a')) return;
+    const g = JSON.parse(card.dataset.garment);
+    document.getElementById('detailImg').innerHTML = g.image
+      ? `<img src="/thumbs/600/${escHtml(g.image)}" alt="">` : '👕';
+    document.getElementById('detailName').textContent = g.name;
+    const rows = [
+      ['Type', g.type], ['Color', g.color], ['Brand', g.brand], ['Size', g.size],
+      ['Fit', g.fit], ['Occasion', g.occasion], ['Material', g.material],
+      ['Tags', (g.tags || []).join(', ')], ['Notes', g.notes],
+      ['Worn', `${g.worn_count}×`],
+    ].filter(([, v]) => v);
+    document.getElementById('detailRows').innerHTML =
+      rows.map(([k, v]) => `<dt>${k}</dt><dd>${escHtml(v)}</dd>`).join('');
+    document.getElementById('detailEdit').href = `/garments/${g.id}/edit`;
+    document.getElementById('detailRemove').onclick = async () => {
+      if (await deleteGarment(g.id, card.querySelector('.card-btn.danger'))) closeDetail();
+    };
+    document.getElementById('detailOverlay').classList.add('open');
+    document.body.style.overflow = 'hidden';
+  }
+
+  function closeDetail() {
+    document.getElementById('detailOverlay').classList.remove('open');
+    document.body.style.overflow = '';
+  }
+
   // Filter by type
   document.querySelectorAll('.filter-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -362,10 +458,11 @@
   }
 
   async function deleteGarment(id, btn) {
-    if (!confirm('Remove this item from your closet?')) return;
+    if (!confirm('Remove this item from your closet?')) return false;
     const card = btn.closest('.garment-card');
     const res = await fetch(`/garments/${id}`, { method: 'DELETE' });
     if (res.ok) card.remove();
+    return res.ok;
   }
 </script>
 {% endblock %}
