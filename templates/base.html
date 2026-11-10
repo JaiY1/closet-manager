@@ -182,6 +182,20 @@
       font-family: inherit;
     }
 
+    /* iOS gives date fields their own intrinsic width and height, which ignores
+       width:100% and pushes the box past its card — reset it to behave like a
+       normal text field. */
+    input[type="date"] {
+      -webkit-appearance: none;
+      appearance: none;
+      display: block;
+      min-width: 0;
+      max-width: 100%;
+      min-height: 44px;
+      text-align: left;
+    }
+    input[type="date"]::-webkit-date-and-time-value { text-align: left; }
+
     input:focus, select:focus, textarea:focus {
       border-color: var(--accent);
       box-shadow: 0 0 0 3px var(--accent-soft);
@@ -309,7 +323,8 @@
         display: flex;
         background: var(--surface);
         border-top: 2px solid var(--line);
-        padding-bottom: env(safe-area-inset-bottom);  /* clear the home-swipe bar */
+        /* clear the home-swipe bar — it only needs ~20px of the 34px inset */
+        padding-bottom: max(0px, calc(env(safe-area-inset-bottom) - 14px));
       }
       .mobile-tabbar a {
         flex: 1;
