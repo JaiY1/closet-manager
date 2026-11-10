@@ -655,7 +655,7 @@ def test_calendar_cannot_log_foreign_garments_or_outfits():
     logs = [l for l in get_calendar(attacker) if l["date"] == "2026-07-18"]
     assert logs and logs[0]["garment_ids"] == [ag]
     assert logs[0]["outfit_id"] is None  # foreign outfit id rejected
-    assert get_garment(vg, victim)["worn_count"] == 1  # only the victim's own outfit bump
+    assert get_garment(vg, victim)["worn_count"] == 0  # saving an outfit no longer bumps; attacker's log didn't either
 
 
 def test_calendar_relog_corrects_worn_count():
@@ -830,3 +830,139 @@ def test_tryon_cache_hit_resolves_without_a_job(app_module, logged_in, monkeypat
     body = r.get_json()
     assert body.get("cached") is True
     assert "job_id" not in body
+
+
+# --- Mobile speed + upload handling (thumbnails, upright photos, lighter import) ---
+
+def _jpeg_bytes(size=(40, 20), orientation=None):
+    from PIL import Image
+    img = Image.new("RGB", size, (200, 30, 30))
+    out = BytesIO()
+    if orientation:
+        exif = Image.Exif()
+        exif[0x0112] = orientation
+        img.save(out, format="JPEG", exif=exif)
+    else:
+        img.save(out, format="JPEG")
+    return out.getvalue()
+
+
+def test_save_image_rotates_upright_and_caps_size(app_module):
+    # iPhone photos are stored sideways with an EXIF rotation tag (6 = rotate
+    # 90°). Saved copies must be upright with the tag gone, and never larger
+    # than _MAX_STORED_PX on a side.
+    from PIL import Image
+    rel = app_module._save_image(_jpeg_bytes((3000, 1500), orientation=6), "t_", "photo.jpg")
+    img = Image.open(app_module.DATA_DIR / rel)
+    assert rel.endswith(".jpg")
+    assert img.size == (1000, 2000)          # rotated to portrait, then capped
+    assert img.getexif().get(0x0112) is None
+
+
+def test_save_image_keeps_undecodable_bytes_under_safe_extension(app_module):
+    rel = app_module._save_image(b"<script>not an image</script>", "t_", "evil.html")
+    assert rel.endswith(".jpg")
+    assert (app_module.DATA_DIR / rel).read_bytes() == b"<script>not an image</script>"
+
+
+def test_thumbnail_is_small_webp_owner_only_and_cleaned_up(app_module, logged_in):
+    from PIL import Image
+    from database import set_body_photo
+    c, uid = logged_in
+    rel = app_module._save_image(_jpeg_bytes((1200, 900)), "thumb_", "p.jpg")
+    name = rel.split("/", 1)[1]
+
+    assert c.get(f"/thumbs/160/{rel}").status_code == 404      # not this user's file yet
+    set_body_photo(uid, rel)
+    r = c.get(f"/thumbs/160/{rel}")
+    assert r.status_code == 200
+    assert r.mimetype == "image/webp"
+    assert r.headers["Cache-Control"] == "private, max-age=31536000, immutable"
+    assert max(Image.open(BytesIO(r.data)).size) == 160
+    assert c.get(f"/thumbs/999/{rel}").status_code == 404      # only whitelisted sizes
+
+    thumb = app_module._THUMB_DIR / "160" / f"{name}.webp"
+    assert thumb.is_file()
+    app_module._delete_upload(rel)
+    assert not thumb.exists()
+
+
+def test_thumbnail_requires_login(client):
+    assert client.get("/thumbs/160/uploads/x.png").status_code == 302
+
+
+def test_photo_analyze_keeps_photo_server_side_and_regenerates_by_job(app_module, logged_in, monkeypatch):
+    # Regression: the eager result used to carry a full base64 copy of the
+    # source photo per detected garment (tens of MB on a phone). The photo now
+    # stays on the job and /add/photo/cutout regenerates from it by job id.
+    import time as _time
+    c, uid = logged_in
+    monkeypatch.setattr(app_module, "ANTHROPIC_API_KEY", "fake")
+    monkeypatch.setattr(app_module, "GEMINI_API_KEY", "fake")
+    monkeypatch.setattr(app_module, "OPTIN_CUTOUTS", False)
+    monkeypatch.setattr(app_module, "detect_garments_in_photo",
+                        lambda photo_bytes: [{"name": "Shirt", "type": "shirt", "color": "blue"}])
+    monkeypatch.setattr(app_module, "cutout_cached", lambda photo_bytes, desc: False)
+    seen = []
+    monkeypatch.setattr(app_module, "reconstruct_garment",
+                        lambda photo_bytes, desc, force=False: seen.append((photo_bytes, force)) or b"png")
+    monkeypatch.setattr(app_module, "record_image_event", lambda uid, kind: None)
+
+    job_id = c.post("/add/photo/analyze", data={'image': (BytesIO(b"the-photo"), 'photo.jpg')},
+                    content_type='multipart/form-data').get_json()["job_id"]
+    body = {"status": "running"}
+    for _ in range(50):
+        body = c.get(f"/add/photo/analyze/{job_id}/status").get_json()
+        if body["status"] != "running":
+            break
+        _time.sleep(0.05)
+    assert body["status"] == "done"
+    assert "crop_b64" not in body["garments"][0]
+    assert "photo" not in body
+
+    r = c.post("/add/photo/cutout", json={"job_id": job_id, "name": "Shirt", "regenerate": True})
+    assert r.status_code == 200
+    assert seen[-1] == (b"the-photo", True)
+    assert c.post("/add/photo/cutout", json={"job_id": "nope", "name": "Shirt"}).status_code == 404
+
+
+# --- Deleting outfits / calendar entries, and what counts as "worn" ---
+
+def test_saving_an_outfit_does_not_count_as_wearing_it():
+    from database import get_or_create_user, add_outfit, get_garment
+    uid = get_or_create_user("Worn Count User")["id"]
+    g = _add_garment_for(uid, "Unworn Shirt")
+    add_outfit(uid, "look", "", 0, "", [g])
+    assert get_garment(g, uid)["worn_count"] == 0
+
+
+def test_delete_outfit_is_owner_only(logged_in):
+    from database import get_or_create_user, add_outfit, get_outfits
+    c, uid = logged_in
+    other = get_or_create_user("Other Outfit User")["id"]
+    mine = add_outfit(uid, "mine", "", 0, "", [])
+    theirs = add_outfit(other, "theirs", "", 0, "", [])
+    assert c.delete(f"/outfits/{mine}").status_code == 200
+    assert c.delete(f"/outfits/{theirs}").status_code == 200   # no-op, not an error
+    assert mine not in [o["id"] for o in get_outfits(uid)]
+    assert theirs in [o["id"] for o in get_outfits(other)]
+
+
+def test_delete_calendar_entry_reverts_worn_count_and_is_owner_only(logged_in):
+    from database import get_or_create_user, log_outfit, get_calendar, get_garment
+    c, uid = logged_in
+    g = _add_garment_for(uid, "Logged Shirt")
+    log_outfit(uid, "2026-03-03", None, [g], "")
+    log_id = [l for l in get_calendar(uid) if l["date"] == "2026-03-03"][0]["id"]
+    assert get_garment(g, uid)["worn_count"] == 1
+
+    other = get_or_create_user("Other Calendar User")["id"]
+    og = _add_garment_for(other, "Their Shirt")
+    log_outfit(other, "2026-03-03", None, [og], "")
+    other_log = [l for l in get_calendar(other) if l["date"] == "2026-03-03"][0]["id"]
+
+    c.delete(f"/calendar/{other_log}")                       # someone else's entry: untouched
+    assert get_garment(og, other)["worn_count"] == 1
+    assert c.delete(f"/calendar/{log_id}").status_code == 200
+    assert get_garment(g, uid)["worn_count"] == 0
+    assert not [l for l in get_calendar(uid) if l["date"] == "2026-03-03"]

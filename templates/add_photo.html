@@ -121,6 +121,7 @@
 <script>
   const TYPES = ["shirt","t-shirt","polo","hoodie","sweater","jacket","coat","trousers","jeans","shorts","chinos","suit","blazer","dress","skirt","shoes","sneakers","boots","loafers","belt","bag","accessory","other"];
   let detected = [];
+  let currentJobId = null;  // the source photo stays server-side with this job
 
   async function loadUsage() {
     try {
@@ -135,7 +136,7 @@
   // Preview / regenerate a single cutout in the review grid.
   async function genCutout(i, regenerate) {
     const g = detected[i];
-    if (!g || !g.crop_b64) return;
+    if (!g || !(g.crop_b64 || currentJobId)) return;
     const btn = document.getElementById('genbtn' + i);
     const st = document.getElementById('gen' + i);
     btn.disabled = true;
@@ -144,7 +145,7 @@
       const res = await fetch('/add/photo/cutout', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          crop_b64: g.crop_b64, name: g.name, color: g.color,
+          crop_b64: g.crop_b64, job_id: currentJobId, name: g.name, color: g.color,
           notes: g.notes, regenerate: !!regenerate
         })
       });
@@ -224,7 +225,7 @@
     document.getElementById('actions').style.display = 'none';
 
     const fd = new FormData();
-    fd.append('image', file);
+    fd.append('image', await shrinkImage(file));
     try {
       const res = await fetch('/add/photo/analyze', { method: 'POST', body: fd });
       const data = await res.json();
@@ -238,6 +239,7 @@
 
   function pollJob(jobId) {
     clearTimeout(pollTimer);
+    currentJobId = jobId;
     const status = document.getElementById('status');
     const tick = async () => {
       let data;

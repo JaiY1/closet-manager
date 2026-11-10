@@ -48,6 +48,17 @@ All image-pipeline improvements are behind **feature flags in `config.py`** (env
 - **Every real (non-cached) Gemini call's timing gets recorded** — `gemini_timing`, written from `imagegen.py` itself (`reconstruct_garment`, `tryon`), including whether `CUTOUT_RETRY`'s second full Gemini call fired (roughly doubles latency for whatever fraction of cutouts trigger it). View at `/admin/timing`. Real measurements so far: single cutout calls land around 9-10s — that's essentially all Gemini's own model inference/network round-trip, not our pre/post-processing (resize, chroma-key are local numpy/PIL work, milliseconds) — so it isn't something further code changes can meaningfully cut; the parallelization above is the real lever we have (wall-clock time for a multi-garment photo, not any single call's latency).
 - **One-off admin routes** (all `ACCESS_CODE`-gated, same pattern as the pre-existing `/admin/import-data`): `GET /admin/list-users` (counts per user), `POST /admin/merge-user` (moves garments/outfits/calendar/wishlist/usage-history/style-profile/body-photo from one account to another — built for consolidating a legacy name-only account onto a newly-linked Google/email account), `GET /admin/errors`, `GET /admin/timing`. **`ACCESS_CODE` is currently unset on Railway** (removed at some point after the account-merge work was done) — these routes 403 until it's re-added as a Railway env var.
 
+### What's built (V6 — phone pass: speed, UI, bug fixes)
+- **Thumbnails** — `/thumbs/<160|600>/uploads/<file>` (`app.py: serve_thumb`) makes a small WebP on first request and keeps it under `$DATA_DIR/.thumbs/`; same ownership gate + immutable caching as `serve_upload`, removed alongside the original in `_delete_upload`. Grids/lists use thumbs (600 for catalog tiles and the try-on gallery, 160 for list rows); full-size files are only for the edit page and try-on results. Extra gallery photos on the catalog use `data-src` and load when stepped to.
+- **Uploads are normalised on save** (`app.py: _save_image`) — rotated upright per EXIF, capped at 2000px, re-encoded JPEG (PNG if transparent); HEIC opens via optional `pillow-heif` (installed on Python ≥ 3.10, i.e. in Docker, not on the local 3.9). Undecodable bytes are still stored raw under a `_safe_ext` extension. `vision.py`/`imagegen.py` resize helpers also `exif_transpose`, so the AI never sees a sideways phone photo.
+- **Browser shrinks photos before upload** — `shrinkImage()` / `shrinkInput()` in `base.html` (JPEG/HEIC over 600KB → 2000px JPEG; PNGs pass through).
+- **Photo import keeps the source photo on the job** (`_photo_jobs[id]['photo']`), not in the result — the eager result used to carry one base64 copy per garment. `/add/photo/cutout` regenerates by `job_id`; `crop_b64` is only used in `OPTIN_CUTOUTS` mode.
+- **`worn_count` only moves on calendar logs** — saving an outfit no longer bumps it. Outfits and calendar entries can be deleted (`DELETE /outfits/<id>`, `DELETE /calendar/<log_id>`; the latter reverts its worn counts).
+- **Suggestions cover dresses/suits and accessories** (`agents.py: _FULL_BODY`, `_ACCESSORIES`). Catalog filter buttons are generated from the types actually in the closet.
+- **Service worker never caches `/static/uploads/`** (it used to, despite the comment); cache bumped to `pop-shell-v3`.
+- **Mobile layout** — 2-column catalog, one swipeable filter row, `minmax(0, 1fr)` on the Outfits/Calendar grids (a bare `1fr` overflowed on long no-wrap names), 16px inputs (stops iOS focus-zoom), `viewport-fit=cover` + safe-area padding on the tab bar, themed link colour via `:where(a)`.
+- Gunicorn threads default 8 (was 4); DB indexes on the per-image ownership lookups.
+
 ### Key files
 | File | Role |
 |------|------|
@@ -86,7 +97,7 @@ GEMINI_API_KEY is optional — without it the app runs fine and the photo-import
 
 ## Testing Status
 
-**Current source of truth: `tests/test_security.py`, run with `python3 -m pytest -q`** — 55 automated tests as of 2026-08-14 (auth flows, cross-user isolation, upload safety, background jobs, admin routes, error/timing logging, link-import's SSRF guard). The phase-by-phase log below is the original manual verification pass from the initial build and is historical — real, but no longer the primary signal of what's covered.
+**Current source of truth: `tests/test_security.py`, run with `python3 -m pytest -q`** — 65 automated tests as of 2026-11-10 (auth flows, cross-user isolation, upload safety + normalisation, thumbnails, background jobs, outfit/calendar deletes, admin routes, error/timing logging, link-import's SSRF guard). The phase-by-phase log below is the original manual verification pass from the initial build and is historical — real, but no longer the primary signal of what's covered.
 
 ### Phase 1 — Backend & Routes (COMPLETE, done without API key)
 

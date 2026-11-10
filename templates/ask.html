@@ -279,8 +279,12 @@
     try {
       const res = await fetch('/style/refresh', { method: 'POST' });
       const data = await res.json();
-      box.textContent = data.summary;
-      status.textContent = 'Profile updated.';
+      if (data.error || !data.summary) {
+        status.textContent = data.error || 'Failed to refresh.';
+      } else {
+        box.textContent = data.summary;
+        status.textContent = 'Profile updated.';
+      }
     } catch {
       status.textContent = 'Failed to refresh.';
     }
@@ -306,7 +310,12 @@
       const res = await fetch('/suggest?' + params.toString());
       const data = await res.json();
 
-      if (data.error) { status.textContent = data.error; return; }
+      if (data.error) { status.textContent = data.error; btn.disabled = false; return; }
+      if (!(data.items || []).length) {
+        status.textContent = 'Nothing to suggest yet — add a few garments to your closet first.';
+        btn.disabled = false;
+        return;
+      }
 
       result.innerHTML = '';
       currentGarmentIds = [];
@@ -314,7 +323,7 @@
         const g = item.garment;
         if (g.id != null) currentGarmentIds.push(g.id);
         const imgHtml = g.image_path
-          ? `<div class="outfit-item-img"><img src="/static/${esc(g.image_path)}" alt=""></div>`
+          ? `<div class="outfit-item-img"><img src="/thumbs/160/${esc(g.image_path)}" alt=""></div>`
           : `<div class="outfit-item-img">👕</div>`;
         const meta = [g.color, g.brand, g.fit ? g.fit + ' fit' : ''].filter(Boolean).join(' · ');
         result.innerHTML += `
@@ -369,7 +378,7 @@
       const grid = document.getElementById('tryonGallery');
       if (!items.length) { card.style.display = 'none'; return; }
       grid.innerHTML = items.map(i =>
-        `<a href="${esc(i.url)}" target="_blank" title="${esc(i.created_at)}"><img src="${esc(i.url)}" alt="Try-on"></a>`
+        `<a href="${esc(i.url)}" target="_blank" title="${esc(i.created_at)}"><img src="${esc(i.url.replace('/static/', '/thumbs/600/'))}" alt="Try-on" loading="lazy"></a>`
       ).join('');
       card.style.display = 'block';
     } catch {}
@@ -392,7 +401,7 @@
     if (hasBodyPhoto) {
       row.innerHTML = `
         <div class="body-thumb-row">
-          ${bodyPhotoUrl ? `<img src="${esc(bodyPhotoUrl)}" alt="Your photo">` : ''}
+          ${bodyPhotoUrl ? `<img src="${esc(bodyPhotoUrl.replace('/static/', '/thumbs/160/'))}" alt="Your photo">` : ''}
           <span>Your try-on photo is set. <a href="#" onclick="changeBodyPhoto(event)">Change</a></span>
         </div>
         ${bodyWarning ? `<div class="body-warning">⚠️ ${esc(bodyWarning)}</div>` : ''}`;
@@ -420,7 +429,7 @@
     const status = document.getElementById('tryonStatus');
     status.textContent = 'Saving your photo…';
     const fd = new FormData();
-    fd.append('image', file);
+    fd.append('image', await shrinkImage(file));
     try {
       const res = await fetch('/settings/body-photo', { method: 'POST', body: fd });
       const data = await res.json();
@@ -437,12 +446,52 @@
     }
   }
 
+  function showTryonResult(url) {
+    document.getElementById('tryonResult').innerHTML = `<img src="${esc(url)}" alt="You in this outfit">`;
+    document.getElementById('tryonStatus').textContent = '';
+    document.getElementById('tryonHint').textContent =
+      'AI-generated preview — proportions and likeness are approximate.';
+    loadUsage();
+    loadGallery();
+  }
+
+  // A fresh render runs server-side as a background job (see app.py), so the
+  // POST below returns a job id to poll — only a cache hit returns the URL
+  // straight away. Same polling as the Outfits page.
+  function pollTryonJob(jobId) {
+    const status = document.getElementById('tryonStatus');
+    const btn = document.getElementById('tryonBtn');
+    const tick = async () => {
+      let data;
+      try {
+        const res = await fetch(`/suggest/tryon/${jobId}/status`);
+        if (res.status === 404) {
+          status.textContent = '⚠️ That render expired or was not found. Try again.';
+          btn.disabled = false;
+          return;
+        }
+        data = await res.json();
+      } catch (e) {
+        setTimeout(tick, 1500);  // transient blip (tab was backgrounded) — keep polling
+        return;
+      }
+      if (data.status === 'running') { setTimeout(tick, 1500); return; }
+      btn.disabled = false;
+      if (data.status === 'error') {
+        status.textContent = '⚠️ ' + (data.error || 'Something went wrong.');
+        return;
+      }
+      showTryonResult(data.url);
+    };
+    tick();
+  }
+
   async function runTryon() {
     const btn = document.getElementById('tryonBtn');
     const status = document.getElementById('tryonStatus');
     const out = document.getElementById('tryonResult');
     btn.disabled = true;
-    status.textContent = 'Rendering you in this outfit — about 10–15 seconds…';
+    status.textContent = 'Rendering you in this outfit — this keeps running even if you switch tabs…';
     out.innerHTML = '';
     try {
       const res = await fetch('/suggest/tryon', {
@@ -455,24 +504,20 @@
         hasBodyPhoto = false; bodyPhotoUrl = null; renderBodyRow();
         status.textContent = '☝️ Add a photo of yourself first.';
         btn.disabled = false;
-        return;
-      }
-      if (data.error) {
+      } else if (data.error) {
         status.textContent = '⚠️ ' + data.error;
         loadUsage();  // a cap may have just been hit
         btn.disabled = false;
-        return;
+      } else if (data.url) {
+        showTryonResult(data.url);
+        btn.disabled = false;
+      } else if (data.job_id) {
+        pollTryonJob(data.job_id);
       }
-      out.innerHTML = `<img src="${esc(data.url)}" alt="You in this outfit">`;
-      status.textContent = '';
-      document.getElementById('tryonHint').textContent =
-        'AI-generated preview — proportions and likeness are approximate.';
-      loadUsage();
-      loadGallery();
     } catch {
       status.textContent = '⚠️ Try-on failed. Try again.';
+      btn.disabled = false;
     }
-    btn.disabled = false;
   }
 
   function changeBodyPhoto(e) {

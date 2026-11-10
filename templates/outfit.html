@@ -5,12 +5,15 @@
 <style>
   .two-col {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: 24px;
     align-items: start;
   }
 
-  @media (max-width: 700px) { .two-col { grid-template-columns: 1fr; } }
+  /* minmax(0, …): a bare 1fr can't shrink below its longest no-wrap garment name */
+  @media (max-width: 700px) { .two-col { grid-template-columns: minmax(0, 1fr); } }
+  .row-del { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 0.9rem; padding: 2px 6px; }
+  .row-del:hover { color: var(--danger); }
 
   /* Garment picker */
   .picker-search {
@@ -183,7 +186,7 @@
         <div class="garment-row" data-id="{{ g.id }}" data-name="{{ g.name }}" onclick="toggleSelect(this)">
           <div class="garment-thumb">
             {% if g.image_path %}
-              <img src="/static/{{ g.image_path }}" alt="">
+              <img src="/thumbs/160/{{ g.image_path }}" alt="" loading="lazy">
             {% else %}
               👕
             {% endif %}
@@ -270,6 +273,7 @@
           </div>
           <div class="star-display">
             {% for i in range(o.rating) %}★{% endfor %}{% for i in range(5 - o.rating) %}☆{% endfor %}
+            <button class="row-del" title="Delete outfit" onclick="deleteOutfit({{ o.id }}, this)">✕</button>
           </div>
         </div>
         <div class="outfit-items">
@@ -288,6 +292,12 @@
 </div>
 
 <script>
+  async function deleteOutfit(id, btn) {
+    if (!confirm('Delete this saved outfit?')) return;
+    const res = await fetch(`/outfits/${id}`, { method: 'DELETE' });
+    if (res.ok) btn.closest('.outfit-card').remove();
+  }
+
   let selectedIds = new Set();
   let rating = 0;
 
@@ -405,7 +415,7 @@
     if (hasBodyPhoto) {
       row.innerHTML = `
         <div class="body-thumb-row">
-          ${bodyPhotoUrl ? `<img src="${esc(bodyPhotoUrl)}" alt="Your photo">` : ''}
+          ${bodyPhotoUrl ? `<img src="${esc(bodyPhotoUrl.replace('/static/', '/thumbs/160/'))}" alt="Your photo">` : ''}
           <span>Your try-on photo is set. <a href="#" onclick="changeBodyPhoto(event)">Change</a></span>
         </div>
         ${bodyWarning ? `<div class="body-warning">⚠️ ${esc(bodyWarning)}</div>` : ''}`;
@@ -436,7 +446,7 @@
     const status = document.getElementById('tryonStatus');
     status.textContent = 'Saving your photo…';
     const fd = new FormData();
-    fd.append('image', file);
+    fd.append('image', await shrinkImage(file));
     try {
       const data = await (await fetch('/settings/body-photo', { method: 'POST', body: fd })).json();
       if (data.error) { status.textContent = '⚠️ ' + data.error; return; }

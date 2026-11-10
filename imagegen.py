@@ -16,7 +16,7 @@ from io import BytesIO
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 from google import genai
 from google.genai import types
 
@@ -61,7 +61,8 @@ def _cache_put(key: str, data: bytes):
 
 def _resize_to_jpeg(image_bytes: bytes, max_size: int = 1024) -> bytes:
     """Reference images don't need to be huge; keep token cost sane."""
-    img = Image.open(BytesIO(image_bytes)).convert("RGB")
+    # exif_transpose: phone photos are stored sideways with a rotation tag.
+    img = ImageOps.exif_transpose(Image.open(BytesIO(image_bytes))).convert("RGB")
     img.thumbnail((max_size, max_size), Image.LANCZOS)
     out = BytesIO()
     img.save(out, format="JPEG", quality=90)
@@ -391,7 +392,7 @@ def remove_bg(image_bytes: bytes) -> bytes:
     from rembg import remove, new_session  # heavy import; keep it lazy
     if _rembg_session is None:
         _rembg_session = new_session()
-    img = Image.open(BytesIO(image_bytes)).convert("RGBA")
+    img = ImageOps.exif_transpose(Image.open(BytesIO(image_bytes))).convert("RGBA")
     out = remove(img, session=_rembg_session)
     buf = BytesIO()
     out.save(buf, format="PNG")

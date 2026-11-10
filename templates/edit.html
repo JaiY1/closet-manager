@@ -210,8 +210,9 @@
 </div>
 
 <script>
-  function handleImage(input) {
+  async function handleImage(input) {
     if (!input.files[0]) return;
+    await shrinkInput(input);
     const reader = new FileReader();
     reader.onload = e => {
       document.getElementById('previewImg').src = e.target.result;
@@ -244,8 +245,9 @@
     container.appendChild(wrap);
   }
 
-  function previewExtra(input, idx) {
+  async function previewExtra(input, idx) {
     if (!input.files[0]) return;
+    await shrinkInput(input);
     const reader = new FileReader();
     reader.onload = e => {
       document.getElementById(`ei${idx}`).src = e.target.result;

@@ -173,6 +173,19 @@ def init_db():
 
     _migrate_to_multiuser(conn)
     _migrate_auth_columns(conn)
+
+    # Lookups that run on every page/image request (user_owns_upload checks
+    # these paths once per image) — created after the migrations above so the
+    # user_id columns exist on old DBs.
+    conn.executescript("""
+        CREATE INDEX IF NOT EXISTS idx_garments_user        ON garments(user_id);
+        CREATE INDEX IF NOT EXISTS idx_garments_image       ON garments(image_path);
+        CREATE INDEX IF NOT EXISTS idx_garment_images_gid   ON garment_images(garment_id);
+        CREATE INDEX IF NOT EXISTS idx_garment_images_path  ON garment_images(image_path);
+        CREATE INDEX IF NOT EXISTS idx_tryon_history_user   ON tryon_history(user_id);
+        CREATE INDEX IF NOT EXISTS idx_tryon_history_path   ON tryon_history(image_path);
+    """)
+    conn.commit()
     conn.close()
 
 
@@ -710,9 +723,16 @@ def add_outfit(user_id, name, occasion, rating, notes, garment_ids) -> int:
         conn.execute("INSERT OR IGNORE INTO outfit_items VALUES (?, ?)", (outfit_id, gid))
     conn.commit()
     conn.close()
-    for gid in garment_ids:
-        _increment_worn(gid)
+    # Saving an outfit is not wearing it — worn_count only moves when a day is
+    # logged on the calendar (it used to bump here too, double-counting).
     return outfit_id
+
+
+def delete_outfit(outfit_id: int, user_id: int):
+    conn = get_db()
+    conn.execute("DELETE FROM outfits WHERE id = ? AND user_id = ?", (outfit_id, user_id))
+    conn.commit()
+    conn.close()
 
 
 def get_outfits(user_id: int, limit: int = 50) -> list[dict]:
@@ -783,6 +803,20 @@ def log_outfit(user_id: int, date: str, outfit_id, garment_ids: list, notes: str
         _decrement_worn(gid)
     for gid in garment_ids or []:
         _increment_worn(gid)
+
+
+def delete_outfit_log(log_id: int, user_id: int):
+    """Remove a calendar entry and take back the worn counts it added."""
+    conn = get_db()
+    row = conn.execute(
+        "SELECT garment_ids FROM outfit_logs WHERE id = ? AND user_id = ?", (log_id, user_id)
+    ).fetchone()
+    if row:
+        conn.execute("DELETE FROM outfit_logs WHERE id = ?", (log_id,))
+        conn.commit()
+    conn.close()
+    for gid in (json.loads(row['garment_ids'] or '[]') if row else []):
+        _decrement_worn(gid)
 
 
 def get_calendar(user_id: int, limit: int = 30) -> list[dict]:

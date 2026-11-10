@@ -5,11 +5,13 @@
 <style>
   .two-col {
     display: grid;
-    grid-template-columns: 380px 1fr;
+    grid-template-columns: 380px minmax(0, 1fr);
     gap: 24px;
     align-items: start;
   }
-  @media (max-width: 750px) { .two-col { grid-template-columns: 1fr; } }
+  @media (max-width: 750px) { .two-col { grid-template-columns: minmax(0, 1fr); } }
+  .row-del { float: right; background: none; border: none; color: var(--muted); cursor: pointer; font-size: 0.9rem; padding: 0 4px; }
+  .row-del:hover { color: var(--danger); }
 
   /* Log form */
   .garment-list {
@@ -166,7 +168,7 @@
         <div class="garment-row" data-id="{{ g.id }}" data-name="{{ g.name }}" onclick="toggleSelect(this)">
           <div class="garment-thumb">
             {% if g.image_path %}
-              <img src="/static/{{ g.image_path }}" alt="">
+              <img src="/thumbs/160/{{ g.image_path }}" alt="" loading="lazy">
             {% else %}
               👕
             {% endif %}
@@ -195,14 +197,14 @@
     {% if logs %}
       {% for log in logs %}
       <div class="log-entry">
-        <div class="log-date">{{ log.date }}</div>
+        <div class="log-date">{{ log.date }}<button class="row-del" title="Delete entry" onclick="deleteLog({{ log.id }})">✕</button></div>
         <div class="log-items">
           {% if log.garments %}
             {% for g in log.garments %}
             <div class="log-item-wrap">
               <div class="log-thumb">
                 {% if g.image_path %}
-                  <img src="/static/{{ g.image_path }}" alt="">
+                  <img src="/thumbs/160/{{ g.image_path }}" alt="" loading="lazy">
                 {% else %}
                   👕
                 {% endif %}
@@ -229,8 +231,10 @@
 </div>
 
 <script>
-  // Set date to today
-  const today = new Date().toISOString().split('T')[0];
+  // Set date to today — in the phone's own time zone (toISOString alone is
+  // UTC, which is already "tomorrow" on a US evening).
+  const now = new Date();
+  const today = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().split('T')[0];
   document.getElementById('logDate').value = today;
 
   let selectedIds = new Set();
@@ -252,7 +256,7 @@
     status.textContent = 'Scanning…';
 
     const fd = new FormData();
-    fd.append('image', input.files[0]);
+    fd.append('image', await shrinkImage(input.files[0]));
 
     try {
       const res = await fetch('/calendar/detect', { method: 'POST', body: fd });
@@ -274,6 +278,12 @@
     } catch (e) {
       status.textContent = 'Scan failed.';
     }
+  }
+
+  async function deleteLog(id) {
+    if (!confirm('Delete this calendar entry?')) return;
+    const res = await fetch(`/calendar/${id}`, { method: 'DELETE' });
+    if (res.ok) location.reload();
   }
 
   async function logOutfit() {

@@ -209,6 +209,8 @@ _TOPS       = ["shirt", "t-shirt", "polo", "hoodie", "sweater", "knitwear", "bla
 _BOTTOMS    = ["jeans", "trousers", "chinos", "shorts", "skirt"]
 _SHOES      = ["shoes", "sneakers", "boots", "loafers"]
 _OUTERWEAR  = ["jacket", "coat"]
+_FULL_BODY  = ["dress", "suit"]
+_ACCESSORIES = ["belt", "bag", "accessory"]
 _SUMMER_WORDS = {"summer", "hot", "warm", "beach", "humid", "sunny"}
 
 # Structured-output schemas — guarantee valid JSON, no code-fence stripping needed
@@ -269,8 +271,10 @@ def suggest_outfit(user_id: int, occasion: str = None, weather: str = None) -> l
     bottoms   = _search_category(query, _BOTTOMS, user_id, n=3)
     shoes     = _search_category(query, _SHOES, user_id, n=3)
     outerwear = [] if summer else _search_category(query, _OUTERWEAR, user_id, n=3)
+    full_body = _search_category(query, _FULL_BODY, user_id, n=3)
+    accessories = _search_category(query, _ACCESSORIES, user_id, n=3)
 
-    all_candidates = tops + bottoms + shoes + outerwear
+    all_candidates = tops + bottoms + shoes + outerwear + full_body + accessories
     if not all_candidates:
         return []
 
@@ -284,6 +288,10 @@ def suggest_outfit(user_id: int, occasion: str = None, weather: str = None) -> l
         sections.append("SHOES:\n" + "\n".join(_garment_line(g) for g in shoes))
     if outerwear:
         sections.append("OUTERWEAR:\n" + "\n".join(_garment_line(g) for g in outerwear))
+    if full_body:
+        sections.append("FULL-BODY PIECES (dress / suit):\n" + "\n".join(_garment_line(g) for g in full_body))
+    if accessories:
+        sections.append("ACCESSORIES:\n" + "\n".join(_garment_line(g) for g in accessories))
 
     # Include top-rated outfit history as style examples
     top_outfits = get_outfits(user_id, limit=3)
@@ -309,7 +317,9 @@ Occasion: {occasion or 'everyday casual'}
 {f'Weather / conditions: {weather}' if weather else ''}
 {'Note: warm weather — no outerwear needed.' if summer else ''}
 
-Pick exactly one item from each available category to form a complete, cohesive outfit.
+Pick exactly one item from each of TOPS, BOTTOMS, SHOES and OUTERWEAR (where listed) to form a complete, cohesive outfit.
+If a FULL-BODY piece suits the occasion better, use it instead of a separate top and bottom (a suit can still take a top under it).
+Add at most one ACCESSORY, and only if it genuinely improves the outfit.
 For each pick give one sentence on why the piece works in this outfit."""
 
     response = client.messages.create(

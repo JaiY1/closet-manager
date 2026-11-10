@@ -2,7 +2,7 @@
 // It caches the app shell lightly and otherwise passes requests to the network.
 // We deliberately do NOT cache API/generation responses (they're user- and
 // cost-sensitive) — only static shell assets, network-first.
-const CACHE = 'pop-shell-v2';
+const CACHE = 'pop-shell-v3';
 const SHELL = ['/static/manifest.json', '/static/icons/icon-192.png'];
 
 self.addEventListener('install', (e) => {
@@ -21,7 +21,8 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   // Only touch same-origin GETs for static assets; everything else goes straight
   // to the network (never cache uploads, try-on renders, or API calls).
-  if (e.request.method !== 'GET' || url.origin !== location.origin || !url.pathname.startsWith('/static/')) {
+  if (e.request.method !== 'GET' || url.origin !== location.origin ||
+      !url.pathname.startsWith('/static/') || url.pathname.startsWith('/static/uploads/')) {
     return;
   }
   e.respondWith(

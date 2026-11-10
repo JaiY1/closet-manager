@@ -15,7 +15,13 @@ from datetime import timedelta
 from io import BytesIO
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageOps
+
+try:  # lets Pillow open iPhone HEIC/HEIF photos; optional so the app boots without it
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+except ImportError:
+    pass
 from flask import Flask, request, jsonify, render_template, redirect, url_for, session, send_from_directory, g
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -37,6 +43,7 @@ from database import (
     add_garment_image, get_all_garment_images, get_garment_images, delete_garment_image,
     get_garment_image_paths, add_outfit, get_outfits, log_outfit, get_calendar, get_style_profile,
     add_wishlist_item, get_wishlist_items, delete_wishlist_item,
+    delete_outfit, delete_outfit_log,
     get_or_create_user, get_user, get_body_photo, set_body_photo,
     record_image_event, count_images_today, count_images_month,
     add_tryon_history, get_tryon_history,
@@ -207,6 +214,42 @@ def _delete_upload(rel_path):
     p = (DATA_DIR / rel_path).resolve()
     if UPLOAD_DIR.resolve() in p.parents and p.is_file():
         p.unlink()
+        for size in _THUMB_SIZES:
+            (_THUMB_DIR / str(size) / f"{p.name}.webp").unlink(missing_ok=True)
+
+
+# Small WebP copies of uploads for grids and lists (see serve_thumb) — the
+# originals are ~1MB+ each, far more than a phone needs for a tile.
+_THUMB_DIR = DATA_DIR / ".thumbs"
+_THUMB_SIZES = (160, 600)   # list rows / catalog tiles
+
+_MAX_STORED_PX = 2000
+
+
+def _save_image(data: bytes, prefix: str, filename: str = "") -> str:
+    """Store an uploaded image and return its 'uploads/...' path. Normalised on
+    the way in: rotated upright per its EXIF tag (phone photos), capped at
+    _MAX_STORED_PX, and re-encoded as JPEG (PNG if it has transparency) so
+    HEIC and friends display in every browser. Bytes Pillow can't decode are
+    stored as-is under a whitelisted extension, as before."""
+    try:
+        img = ImageOps.exif_transpose(Image.open(BytesIO(data)))
+        has_alpha = img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info)
+        img = img.convert("RGBA" if has_alpha else "RGB")
+        img.thumbnail((_MAX_STORED_PX, _MAX_STORED_PX), Image.LANCZOS)
+        out = BytesIO()
+        if has_alpha:
+            ext = ".png"
+            img.save(out, format="PNG")
+        else:
+            ext = ".jpg"
+            img.save(out, format="JPEG", quality=88)
+        data = out.getvalue()
+    except Exception:
+        ext = _safe_ext(filename)
+    fname = _unique_name(prefix, ext)
+    (UPLOAD_DIR / fname).write_bytes(data)
+    return f"uploads/{fname}"
 
 
 def _cap_blocked(uid):
@@ -747,6 +790,37 @@ def serve_upload(filename):
     return resp
 
 
+@app.route("/thumbs/<int:size>/uploads/<path:filename>")
+def serve_thumb(size, filename):
+    """A small WebP copy of an upload, made on first request and kept on disk.
+    Same ownership gate and hard caching as serve_upload. Falls back to the
+    original file if Pillow can't decode it."""
+    if size not in _THUMB_SIZES or not user_owns_upload(session['user_id'], f"uploads/{filename}"):
+        return jsonify({"error": "Not found"}), 404
+    src = (UPLOAD_DIR / filename).resolve()
+    if UPLOAD_DIR.resolve() not in src.parents or not src.is_file():
+        return jsonify({"error": "Not found"}), 404
+    thumb = _THUMB_DIR / str(size) / f"{src.name}.webp"
+    resp = None
+    if not thumb.is_file():
+        try:
+            img = ImageOps.exif_transpose(Image.open(src))
+            has_alpha = img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info)
+            img = img.convert("RGBA" if has_alpha else "RGB")
+            img.thumbnail((size, size), Image.LANCZOS)
+            thumb.parent.mkdir(parents=True, exist_ok=True)
+            # Write-then-rename so a concurrent request never serves a half-written file.
+            tmp = thumb.with_name(f"{thumb.name}.{uuid.uuid4().hex}.tmp")
+            img.save(tmp, format="WEBP", quality=80)
+            os.replace(tmp, thumb)
+        except Exception:
+            resp = send_from_directory(UPLOAD_DIR, filename)
+    if resp is None:
+        resp = send_from_directory(thumb.parent, thumb.name, mimetype="image/webp")
+    resp.headers["Cache-Control"] = "private, max-age=31536000, immutable"
+    return resp
+
+
 # --- Catalog ---
 
 @app.route("/")
@@ -774,18 +848,12 @@ def create_garment():
 
     if 'image' in request.files and request.files['image'].filename:
         f = request.files['image']
-        ext = _safe_ext(f.filename)
-        filename = _unique_name("", ext)
-        f.save(UPLOAD_DIR / filename)
-        image_path = f"uploads/{filename}"
+        image_path = _save_image(f.read(), "", f.filename)
 
     label_image_path = ""
     if 'label_image' in request.files and request.files['label_image'].filename:
         f = request.files['label_image']
-        ext = _safe_ext(f.filename)
-        filename = _unique_name("label_", ext)
-        f.save(UPLOAD_DIR / filename)
-        label_image_path = f"uploads/{filename}"
+        label_image_path = _save_image(f.read(), "label_", f.filename)
 
     tags = [t.strip() for t in data.get('tags', '').split(',') if t.strip()]
 
@@ -808,19 +876,15 @@ def create_garment():
     # Save newly added extra photos
     for i, f in enumerate(request.files.getlist('extra_images')):
         if f and f.filename:
-            ext = _safe_ext(f.filename)
-            fname = _unique_name(f"extra_{garment_id}_{i}_", ext)
-            f.save(UPLOAD_DIR / fname)
-            add_garment_image(garment_id, f"uploads/{fname}", sort_order=i)
+            path = _save_image(f.read(), f"extra_{garment_id}_{i}_", f.filename)
+            add_garment_image(garment_id, path, sort_order=i)
 
     # Save extra label photos — recorded as kind='label' so they're tracked
     # (excluded from the gallery) and cleaned up when the garment is deleted
     for i, f in enumerate(request.files.getlist('extra_label_images')):
         if f and f.filename:
-            ext = _safe_ext(f.filename)
-            fname = _unique_name(f"label_{garment_id}_{i}_", ext)
-            f.save(UPLOAD_DIR / fname)
-            add_garment_image(garment_id, f"uploads/{fname}", sort_order=i, kind='label')
+            path = _save_image(f.read(), f"label_{garment_id}_{i}_", f.filename)
+            add_garment_image(garment_id, path, sort_order=i, kind='label')
 
     garment = get_garment(garment_id, uid)
     embed_garment(garment)
@@ -851,10 +915,7 @@ def update_garment_route(garment_id):
 
     if 'image' in request.files and request.files['image'].filename:
         f = request.files['image']
-        ext = _safe_ext(f.filename)
-        filename = _unique_name("", ext)
-        f.save(UPLOAD_DIR / filename)
-        image_path = f"uploads/{filename}"
+        image_path = _save_image(f.read(), "", f.filename)
 
     fields = dict(
         name=data.get('name', '').strip(),
@@ -877,10 +938,8 @@ def update_garment_route(garment_id):
 
     for i, f in enumerate(request.files.getlist('extra_images')):
         if f and f.filename:
-            ext = _safe_ext(f.filename)
-            fname = _unique_name(f"extra_{garment_id}_{i}_", ext)
-            f.save(UPLOAD_DIR / fname)
-            add_garment_image(garment_id, f"uploads/{fname}", sort_order=i)
+            path = _save_image(f.read(), f"extra_{garment_id}_{i}_", f.filename)
+            add_garment_image(garment_id, path, sort_order=i)
 
     garment = get_garment(garment_id, uid)
     embed_garment(garment)
@@ -986,8 +1045,12 @@ def _run_photo_analyze_job(job_id, uid, photo_bytes):
     # selfies, off-center subjects) — pre-cropping to them cut out the wrong
     # region entirely. Send Gemini the full photo instead and let it locate +
     # isolate the named garment itself, which it does well.
-    for g in detected:
-        g['crop_b64'] = base64.b64encode(photo_bytes).decode('ascii')
+    # Only opt-in mode ships the photo back (it previews and confirms from it).
+    # The default eager mode keeps it server-side on the job instead — sending
+    # a full copy per detected garment made the result tens of MB on a phone.
+    if OPTIN_CUTOUTS:
+        for g in detected:
+            g['crop_b64'] = base64.b64encode(photo_bytes).decode('ascii')
 
     if not OPTIN_CUTOUTS:
         # Eager path: reconstruct every item's cutout up front, in parallel — this
@@ -1046,7 +1109,8 @@ def add_photo_analyze():
     job_id = uuid.uuid4().hex
     with _photo_jobs_lock:
         _prune_jobs(_photo_jobs)
-        _photo_jobs[job_id] = {"status": "running", "user_id": uid, "created_at": time.time()}
+        _photo_jobs[job_id] = {"status": "running", "user_id": uid, "created_at": time.time(),
+                               "photo": photo_bytes}  # kept for /add/photo/cutout regenerate
     threading.Thread(target=_run_photo_analyze_job, args=(job_id, uid, photo_bytes), daemon=True).start()
     return jsonify({"job_id": job_id})
 
@@ -1073,12 +1137,19 @@ def add_photo_cutout():
         return jsonify({"error": "GEMINI_API_KEY not set in .env"}), 503
     data = request.json or {}
     crop_b64 = data.get('crop_b64')
-    if not crop_b64:
+    if crop_b64:
+        try:
+            crop = base64.b64decode(crop_b64)
+        except (ValueError, TypeError):
+            return jsonify({"error": "Invalid crop"}), 400
+    elif data.get('job_id'):
+        # Eager mode: the source photo stays on the server with its analyze job.
+        job = _photo_jobs.get(data['job_id'])
+        if not job or job['user_id'] != uid:
+            return jsonify({"error": "That import has expired — upload the photo again."}), 404
+        crop = job['photo']
+    else:
         return jsonify({"error": "No crop provided"}), 400
-    try:
-        crop = base64.b64decode(crop_b64)
-    except (ValueError, TypeError):
-        return jsonify({"error": "Invalid crop"}), 400
 
     force = bool(data.get('regenerate'))
     desc = ", ".join(x for x in [data.get('color'), data.get('name'), data.get('notes')] if x)
@@ -1202,6 +1273,12 @@ def create_outfit():
     return jsonify({"id": outfit_id, "ok": True})
 
 
+@app.route("/outfits/<int:outfit_id>", methods=["DELETE"])
+def remove_outfit(outfit_id):
+    delete_outfit(outfit_id, session['user_id'])
+    return jsonify({"ok": True})
+
+
 # --- Calendar ---
 
 @app.route("/calendar")
@@ -1239,6 +1316,12 @@ def log_today():
         garment_ids=data.get('garment_ids', []),
         notes=data.get('notes', '')
     )
+    return jsonify({"ok": True})
+
+
+@app.route("/calendar/<int:log_id>", methods=["DELETE"])
+def remove_log(log_id):
+    delete_outfit_log(log_id, session['user_id'])
     return jsonify({"ok": True})
 
 
@@ -1298,7 +1381,7 @@ def _garment_png_bytes(rel_path):
     p = (DATA_DIR / rel_path).resolve()
     if not (UPLOAD_DIR.resolve() in p.parents and p.is_file()):
         return None
-    img = Image.open(p)
+    img = ImageOps.exif_transpose(Image.open(p))
     img = img.convert("RGBA") if img.mode in ("RGBA", "LA", "P") else img.convert("RGB")
     out = BytesIO()
     img.save(out, format="PNG")
@@ -1328,10 +1411,7 @@ def set_body_photo_route():
         except Exception:
             warning = ""
 
-    ext = _safe_ext(f.filename)
-    filename = _unique_name(f"body_{uid}_", ext)
-    (UPLOAD_DIR / filename).write_bytes(img_bytes)
-    rel = f"uploads/{filename}"
+    rel = _save_image(img_bytes, f"body_{uid}_", f.filename)
     old = get_body_photo(uid)
     set_body_photo(uid, rel)
     if old and old != rel:

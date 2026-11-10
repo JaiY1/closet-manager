@@ -10,7 +10,9 @@ import os
 
 bind = f"0.0.0.0:{os.environ.get('PORT', '8080')}"
 workers = 1
-threads = int(os.environ.get("GUNICORN_THREADS", "4"))
+# Requests are I/O-bound (image files, waits on Claude), and one catalog page
+# fans out into dozens of image requests — 4 threads queued them up.
+threads = int(os.environ.get("GUNICORN_THREADS", "8"))
 worker_class = "gthread"
 
 # Gemini image generation is slow (~8-15s each) and a multi-item photo-import

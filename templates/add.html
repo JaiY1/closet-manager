@@ -226,9 +226,10 @@
 </div>
 
 <script>
-  function handleImage(input) {
+  async function handleImage(input) {
+    if (!input.files[0]) return;
+    await shrinkInput(input);
     const file = input.files[0];
-    if (!file) return;
 
     // Show preview
     const reader = new FileReader();
@@ -424,8 +425,9 @@
     container.appendChild(wrap);
   }
 
-  function handleExtra(input, idx) {
+  async function handleExtra(input, idx) {
     if (!input.files[0]) return;
+    await shrinkInput(input);
     const reader = new FileReader();
     reader.onload = e => {
       document.getElementById(`extraImg${idx}`).src = e.target.result;
@@ -460,9 +462,10 @@
     container.appendChild(wrap);
   }
 
-  function handleLabel(input, idx) {
+  async function handleLabel(input, idx) {
+    if (!input.files[0]) return;
+    await shrinkInput(input);
     const file = input.files[0];
-    if (!file) return;
     const reader = new FileReader();
     reader.onload = e => {
       const zone = idx === 0

@@ -2,7 +2,7 @@ import base64
 import json
 from io import BytesIO
 
-from PIL import Image
+from PIL import Image, ImageOps
 import anthropic
 
 from config import ANTHROPIC_API_KEY
@@ -83,7 +83,7 @@ _AUTOTAG_SCHEMA = {
 
 
 def _resize_to_jpeg(image_bytes: bytes, max_size: int = 768) -> bytes:
-    img = Image.open(BytesIO(image_bytes)).convert("RGB")
+    img = ImageOps.exif_transpose(Image.open(BytesIO(image_bytes))).convert("RGB")
     img.thumbnail((max_size, max_size), Image.LANCZOS)
     out = BytesIO()
     img.save(out, format="JPEG", quality=85)

@@ -43,6 +43,21 @@
     gap: 16px;
   }
 
+  @media (max-width: 720px) {
+    .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    /* one swipeable row of filters, bleeding to the screen edges */
+    .filters {
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      width: calc(100% + 32px);
+      margin: 0 -16px;
+      padding: 0 16px 2px;
+      scrollbar-width: none;
+    }
+    .filters::-webkit-scrollbar { display: none; }
+    .filter-btn { flex-shrink: 0; white-space: nowrap; }
+  }
+
   .garment-card {
     background: var(--surface);
     border: 2px solid var(--line);
@@ -254,13 +269,10 @@
 <div class="toolbar">
   <div class="filters" id="filters">
     <button class="filter-btn active" data-type="">All</button>
-    <button class="filter-btn" data-type="shirt">Shirts</button>
-    <button class="filter-btn" data-type="t-shirt">T-Shirts</button>
-    <button class="filter-btn" data-type="trousers">Trousers</button>
-    <button class="filter-btn" data-type="jeans">Jeans</button>
-    <button class="filter-btn" data-type="jacket">Jackets</button>
-    <button class="filter-btn" data-type="shoes">Shoes</button>
-    <button class="filter-btn" data-type="sneakers">Sneakers</button>
+    {# one button per type actually in the closet, so nothing is reachable only via "All" #}
+    {% for t in garments | map(attribute='type') | select | unique | sort %}
+    <button class="filter-btn" data-type="{{ t }}">{{ t | title }}</button>
+    {% endfor %}
   </div>
   <div style="display:flex;gap:8px">
     <a href="/add/photo" class="btn btn-ghost">📷 From Photo</a>
@@ -280,7 +292,8 @@
     <div class="garment-img" data-images="{{ imgs | tojson | e }}" data-idx="0">
       {% if imgs %}
         {% for path in imgs %}
-        <img src="/static/{{ path }}" alt="{{ g.name }}" loading="lazy"
+        {# extra gallery photos only download when you step to them #}
+        <img {% if loop.first %}src{% else %}data-src{% endif %}="/thumbs/600/{{ path }}" alt="{{ g.name }}" loading="lazy"
              style="opacity:{{ '1' if loop.first else '0' }}">
         {% endfor %}
         {% if imgs | length > 1 %}
@@ -342,6 +355,7 @@
     imgs[idx].style.opacity = '0';
     dots[idx] && dots[idx].classList.remove('active');
     idx = (idx + dir + imgs.length) % imgs.length;
+    if (!imgs[idx].src) imgs[idx].src = imgs[idx].dataset.src;
     imgs[idx].style.opacity = '1';
     dots[idx] && dots[idx].classList.add('active');
     box.dataset.idx = idx;

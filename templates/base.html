@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
   <title>{% block title %}Closet{% endblock %}</title>
   <link rel="manifest" href="/static/manifest.json">
   <meta name="theme-color" content="#e8590c">
@@ -12,7 +12,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -40,6 +40,10 @@
       --font-body:   'DM Sans', sans-serif;
       --font-mono:   'IBM Plex Mono', monospace;
     }
+
+    /* Plain text links follow the theme; :where() keeps this at zero specificity
+       so every classed link (nav, buttons, tab bar) still sets its own colour. */
+    :where(a) { color: var(--accent); }
 
     body {
       font-family: var(--font-body);
@@ -275,11 +279,15 @@
 
     /* ===== Mobile ===== */
     @media (max-width: 720px) {
+      :root { --shadow: 4px 4px 0 var(--line); }  /* 6px crowds the 16px gutter */
       nav {
         height: 54px;
         padding: 0 16px;
         justify-content: space-between;
+        background: var(--bg);  /* match the iOS status-bar strip above it */
       }
+      /* iOS zooms the page when a focused field's text is under 16px */
+      input[type="text"], input[type="date"], input[type="number"], select, textarea { font-size: 16px; }
       .nav-brand { margin-right: 0; font-size: 1.1rem; }
       /* hide top text links + user controls; bottom tab bar takes over wayfinding */
       nav a:not(.nav-brand) { display: none; }
@@ -290,7 +298,7 @@
 
       .row, .row-3 { grid-template-columns: 1fr; }
 
-      body { padding-bottom: 62px; }
+      body { padding-bottom: calc(62px + env(safe-area-inset-bottom)); }
 
       .mobile-tabbar-wrap {
         position: fixed;
@@ -301,6 +309,7 @@
         display: flex;
         background: var(--surface);
         border-top: 2px solid var(--line);
+        padding-bottom: env(safe-area-inset-bottom);  /* clear the home-swipe bar */
       }
       .mobile-tabbar a {
         flex: 1;
@@ -382,6 +391,30 @@
 </div>
 
 <script>
+  // Shrink a camera photo in the browser before uploading it. The server caps
+  // images at 2000px anyway, so this only saves upload time on a phone. PNGs
+  // (cutouts, screenshots) and anything the browser can't decode pass through.
+  async function shrinkImage(file, maxPx = 2000) {
+    if (!file || !/^image\/(jpeg|heic|heif)$/.test(file.type) || file.size < 600 * 1024) return file;
+    try {
+      const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+      const scale = Math.min(1, maxPx / Math.max(bmp.width, bmp.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(bmp.width * scale);
+      c.height = Math.round(bmp.height * scale);
+      c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+      const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.88));
+      if (!blob || blob.size >= file.size) return file;
+      return new File([blob], file.name.replace(/\.\w+$/, '') + '.jpg', { type: 'image/jpeg' });
+    } catch { return file; }
+  }
+  // Same, for a file input that a normal form submit will send.
+  async function shrinkInput(input) {
+    const file = input.files[0];
+    const small = await shrinkImage(file);
+    if (small !== file) { const dt = new DataTransfer(); dt.items.add(small); input.files = dt.files; }
+  }
+
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
   }
